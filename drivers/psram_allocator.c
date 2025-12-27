@@ -23,9 +23,10 @@ static uint8_t *psram_start = (uint8_t *)PSRAM_BASE;
 static size_t psram_offset = SCRATCH_SIZE;
 
 // Temp allocator support
-// Some MIDI files exceed available temp memory - game continues without music
-#define TEMP_SIZE (4 * 1024 * 1024) // 4MB for temp (music)
-#define PERM_SIZE (PSRAM_SIZE - TEMP_SIZE) // 4MB for permanent
+// Genesis emulator doesn't need large temp allocations like DOOM's MIDI
+// Give most space to permanent allocations for large ROMs (up to 4MB)
+#define TEMP_SIZE (512 * 1024) // 512KB for temp (minimal)
+#define PERM_SIZE (PSRAM_SIZE - TEMP_SIZE) // ~7.5MB for permanent
 static size_t psram_temp_offset = 0;
 static int psram_temp_mode = 0;
 static int psram_sram_mode = 0; // Force SRAM allocation (proper malloc/free)

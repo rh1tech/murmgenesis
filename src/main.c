@@ -444,7 +444,7 @@ int main(void) {
         // Try alternate paths
         if (!load_rom("/GENESIS/test.md") && 
             !load_rom("/genesis/test.bin") &&
-            !load_rom("/GENESIS/test.bin")) {
+            !load_rom("/GENESIS/test.gen")) {
             LOG("Could not find test ROM!\n");
             while (1) {
                 tight_loop_contents();
