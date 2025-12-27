@@ -27,6 +27,9 @@
 #include "sound/ym2612.h"
 #include "sound/gwenesis_sn76489.h"
 
+// Audio driver
+#include "audio.h"
+
 // Screen buffer - 320x240 8-bit indexed (static, not in PSRAM)
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
@@ -34,6 +37,11 @@ static uint8_t SCREEN[SCREEN_HEIGHT][SCREEN_WIDTH];
 
 // Semaphore for render core sync
 static semaphore_t render_start_semaphore;
+
+// Sound processing synchronization
+static volatile bool sound_frame_ready = false;
+static volatile int sound_system_clock = 0;
+static volatile int sound_lines_per_frame = LINES_PER_FRAME_NTSC;
 
 // ROM buffer in PSRAM
 static uint8_t *rom_buffer = NULL;
@@ -199,7 +207,7 @@ static void setup_genesis_palette(void) {
     }
 }
 
-// Video rendering on core 1 (like pico-megadrive)
+// Video rendering and sound processing on core 1
 static void __scratch_x("render") render_core(void) {
     // Allow core 0 to pause this core during flash operations
     multicore_lockout_victim_init();
@@ -215,20 +223,39 @@ static void __scratch_x("render") render_core(void) {
     
     setup_genesis_palette();
     
+    // Initialize audio on Core 1
+    audio_init();
+    
     // Signal that we're ready
     sem_release(&render_start_semaphore);
     
-    // 60 FPS loop
-    #define FRAME_TICK_US 16666
-    uint64_t tick = time_us_64();
-    uint64_t last_frame_tick = tick;
-    
+    // Main Core 1 loop - handles video sync and sound processing
     while (1) {
-        tick = time_us_64();
-        
-        if (tick >= last_frame_tick + FRAME_TICK_US) {
-            last_frame_tick = tick;
-            // Frame timing sync point
+        // Check if Core 0 has completed a frame and sound needs processing
+        if (sound_frame_ready) {
+            // Process sound for all scanlines of the completed frame
+            int target_clock = sound_system_clock;
+            int lpf = sound_lines_per_frame;
+            
+            // Reset sound chip indices for this frame
+            sn76489_clock = 0;
+            sn76489_index = 0;
+            ym2612_clock = 0;
+            ym2612_index = 0;
+            
+            // Run sound chips for entire frame at once
+            // This generates ~888 samples for NTSC
+            for (int line = 0; line < lpf; line++) {
+                int line_clock = (line + 1) * VDP_CYCLES_PER_LINE;
+                gwenesis_SN76489_run(line_clock);
+                ym2612_run(line_clock);
+            }
+            
+            // Update audio output
+            audio_update();
+            
+            // Signal that sound processing is complete
+            sound_frame_ready = false;
         }
         
         tight_loop_contents();
@@ -264,8 +291,6 @@ static void __time_critical_func(emulation_loop)(void) {
         }
         
         system_clock = 0;
-        sn76489_clock = 0;
-        sn76489_index = 0;
         scan_line = 0;
         
         while (scan_line < lines_per_frame) {
@@ -303,19 +328,24 @@ static void __time_critical_func(emulation_loop)(void) {
                     m68k_set_irq(6);
                 }
                 z80_irq_line(1);
-                
-                // Palette is updated by VDP mem during CRAM writes
             }
             
             if (scan_line == screen_height + 1) {
                 z80_irq_line(0);
             }
             
+            // Sound chips run on Core 1 - no sound processing here
+            
             system_clock += VDP_CYCLES_PER_LINE;
         }
         
         frame_counter++;
         m68k.cycles -= system_clock;
+        
+        // Signal Core 1 to process sound for this frame
+        sound_system_clock = system_clock;
+        sound_lines_per_frame = lines_per_frame;
+        sound_frame_ready = true;
         
         // Simple frame timing - target ~60 FPS
         static uint64_t last_frame = 0;
@@ -401,6 +431,8 @@ int main(void) {
     
     // Initialize emulator
     genesis_init();
+    
+    // Audio is initialized on Core 1 (render_core)
     
     LOG("Starting emulation...\n");
     
