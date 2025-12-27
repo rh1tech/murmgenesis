@@ -3,7 +3,7 @@
  * Uses pico_audio_i2s for I2S output
  * Based on murmdoom approach
  * 
- * Uses a ring buffer to decouple emulation speed from audio playback.
+ * Simple direct mixing - no ring buffer to avoid HDMI conflicts
  */
 
 #include "audio.h"
@@ -51,42 +51,6 @@
 #define INCREASE_I2S_DRIVE_STRENGTH 1
 
 //=============================================================================
-// Ring Buffer for decoupling emulation from audio playback
-//=============================================================================
-
-// Ring buffer size - must be power of 2 for fast modulo
-// 4096 samples = ~77ms of audio at 53267 Hz - enough to absorb frame timing variations
-#define RING_BUFFER_SIZE 4096
-#define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
-
-static int16_t ring_buffer[RING_BUFFER_SIZE];
-static volatile uint32_t ring_write_pos = 0;
-static volatile uint32_t ring_read_pos = 0;
-
-// Get number of samples available to read
-static inline uint32_t ring_available(void) {
-    return (ring_write_pos - ring_read_pos) & RING_BUFFER_MASK;
-}
-
-// Get free space in ring buffer
-static inline uint32_t ring_free(void) {
-    return RING_BUFFER_SIZE - 1 - ring_available();
-}
-
-// Write a sample to ring buffer (called by emulation)
-static inline void ring_write(int16_t sample) {
-    ring_buffer[ring_write_pos] = sample;
-    ring_write_pos = (ring_write_pos + 1) & RING_BUFFER_MASK;
-}
-
-// Read a sample from ring buffer (called by audio output)
-static inline int16_t ring_read(void) {
-    int16_t sample = ring_buffer[ring_read_pos];
-    ring_read_pos = (ring_read_pos + 1) & RING_BUFFER_MASK;
-    return sample;
-}
-
-//=============================================================================
 // State
 //=============================================================================
 
@@ -119,7 +83,7 @@ static inline int16_t clamp_s16(int32_t v) {
 }
 
 //=============================================================================
-// Audio mixing
+// Audio mixing - direct from sound chip buffers
 //=============================================================================
 
 static void mix_audio_buffer(audio_buffer_t *buffer) {
@@ -152,39 +116,26 @@ static void mix_audio_buffer(audio_buffer_t *buffer) {
         return;
     }
     
-    // Mix YM2612 samples
-    if (ym_samples > 0) {
-        int mix_count = (ym_samples < available_samples) ? ym_samples : available_samples;
-        for (int i = 0; i < mix_count; i++) {
-            // YM2612 outputs mono, duplicate to stereo
-            int32_t ym_sample = gwenesis_ym2612_buffer[i];
-            ym_sample = (ym_sample * master_volume) >> 7;
-            
-            int32_t left = samples[i * 2] + ym_sample;
-            int32_t right = samples[i * 2 + 1] + ym_sample;
-            
-            samples[i * 2] = clamp_s16(left);
-            samples[i * 2 + 1] = clamp_s16(right);
+    // Mix both sound chips
+    for (int i = 0; i < available_samples; i++) {
+        int32_t mixed = 0;
+        
+        if (i < ym_samples) {
+            mixed += gwenesis_ym2612_buffer[i];
         }
+        if (i < sn_samples) {
+            mixed += gwenesis_sn76489_buffer[i];
+        }
+        
+        // Apply volume and clamp
+        mixed = (mixed * master_volume) >> 7;
+        int16_t sample = clamp_s16(mixed);
+        
+        // Stereo output (duplicate mono to both channels)
+        samples[i * 2] = sample;
+        samples[i * 2 + 1] = sample;
     }
     
-    // Mix SN76489 samples
-    if (sn_samples > 0) {
-        int mix_count = (sn_samples < available_samples) ? sn_samples : available_samples;
-        for (int i = 0; i < mix_count; i++) {
-            // SN76489 outputs mono, duplicate to stereo
-            int32_t sn_sample = gwenesis_sn76489_buffer[i];
-            sn_sample = (sn_sample * master_volume) >> 7;
-            
-            int32_t left = samples[i * 2] + sn_sample;
-            int32_t right = samples[i * 2 + 1] + sn_sample;
-            
-            samples[i * 2] = clamp_s16(left);
-            samples[i * 2 + 1] = clamp_s16(right);
-        }
-    }
-    
-    // Set actual sample count to what we have
     buffer->sample_count = available_samples;
     give_audio_buffer(producer_pool, buffer);
 }
@@ -220,6 +171,8 @@ bool audio_init(void) {
         .dma_channel = PICO_AUDIO_I2S_DMA_CHANNEL,
         .pio_sm = PICO_AUDIO_I2S_STATE_MACHINE,
     };
+    
+    printf("Connecting PIO I2S audio\n");
     
     // Initialize I2S
     const struct audio_format *output_format = audio_i2s_setup(&audio_format, &config);
@@ -269,18 +222,19 @@ void audio_update(void) {
         return;
     }
     
-    // Debug: print sample counts occasionally
-    static int debug_counter = 0;
-    if (++debug_counter >= 120) {  // Every 2 seconds at 60 FPS
-        printf("Audio: YM=%d SN=%d samples\n", ym2612_index, sn76489_index);
-        debug_counter = 0;
-    }
-    
     // Process all available audio buffers
     audio_buffer_t *buffer;
     while ((buffer = take_audio_buffer(producer_pool, false)) != NULL) {
         mix_audio_buffer(buffer);
     }
+}
+
+struct audio_buffer_pool *audio_get_producer_pool(void) {
+    return producer_pool;
+}
+
+void audio_fill_buffer(audio_buffer_t *buffer) {
+    mix_audio_buffer(buffer);
 }
 
 void audio_set_volume(int volume) {

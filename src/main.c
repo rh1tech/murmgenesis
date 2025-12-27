@@ -30,6 +30,11 @@
 // Audio driver
 #include "audio.h"
 
+// Pico audio for buffer types
+#define none pico_audio_enum_none
+#include "pico/audio_i2s.h"
+#undef none
+
 // Screen buffer - 320x240 8-bit indexed (static, not in PSRAM)
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
@@ -40,7 +45,6 @@ static semaphore_t render_start_semaphore;
 
 // Sound processing synchronization
 static volatile bool sound_frame_ready = false;
-static volatile int sound_system_clock = 0;
 static volatile int sound_lines_per_frame = LINES_PER_FRAME_NTSC;
 
 // ROM buffer in PSRAM
@@ -229,12 +233,10 @@ static void __scratch_x("render") render_core(void) {
     // Signal that we're ready
     sem_release(&render_start_semaphore);
     
-    // Main Core 1 loop - handles video sync and sound processing
+    // Core 1 loop - process sound and feed I2S
     while (1) {
-        // Check if Core 0 has completed a frame and sound needs processing
+        // Check if Core 0 has completed a frame
         if (sound_frame_ready) {
-            // Process sound for all scanlines of the completed frame
-            int target_clock = sound_system_clock;
             int lpf = sound_lines_per_frame;
             
             // Reset sound chip indices for this frame
@@ -243,19 +245,23 @@ static void __scratch_x("render") render_core(void) {
             ym2612_clock = 0;
             ym2612_index = 0;
             
-            // Run sound chips for entire frame at once
-            // This generates ~888 samples for NTSC
+            // Run sound chips for entire frame
             for (int line = 0; line < lpf; line++) {
                 int line_clock = (line + 1) * VDP_CYCLES_PER_LINE;
                 gwenesis_SN76489_run(line_clock);
                 ym2612_run(line_clock);
             }
             
-            // Update audio output
+            // Mix to ring buffer
             audio_update();
             
-            // Signal that sound processing is complete
             sound_frame_ready = false;
+        }
+        
+        // Continuously feed I2S from ring buffer at constant rate
+        audio_buffer_t *buffer = take_audio_buffer(audio_get_producer_pool(), false);
+        if (buffer != NULL) {
+            audio_fill_buffer(buffer);
         }
         
         tight_loop_contents();
@@ -343,7 +349,6 @@ static void __time_critical_func(emulation_loop)(void) {
         m68k.cycles -= system_clock;
         
         // Signal Core 1 to process sound for this frame
-        sound_system_clock = system_clock;
         sound_lines_per_frame = lines_per_frame;
         sound_frame_ready = true;
         
