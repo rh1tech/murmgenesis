@@ -62,13 +62,18 @@ extern int hint_pending;
 extern int screen_width;
 extern int screen_height;
 
-// Audio buffers and controls
-int16_t gwenesis_sn76489_buffer[GWENESIS_AUDIO_BUFFER_LENGTH_NTSC * 2];
+// Audio buffers - keep in regular SRAM (not PSRAM) to avoid contention
+// Use __not_in_flash to ensure they stay in RAM
+static int16_t __not_in_flash("audio") gwenesis_sn76489_buffer_mem[GWENESIS_AUDIO_BUFFER_LENGTH_NTSC * 2];
+static int16_t __not_in_flash("audio") gwenesis_ym2612_buffer_mem[GWENESIS_AUDIO_BUFFER_LENGTH_NTSC * 2];
+
+// Exported pointers for external access
+int16_t *gwenesis_sn76489_buffer = gwenesis_sn76489_buffer_mem;
+int16_t *gwenesis_ym2612_buffer = gwenesis_ym2612_buffer_mem;
+
 int sn76489_index;
 int sn76489_clock;
 
-// YM2612 audio (not used yet but needed by ym2612.c)
-int16_t gwenesis_ym2612_buffer[GWENESIS_AUDIO_BUFFER_LENGTH_NTSC * 2];
 int ym2612_index;
 int ym2612_clock;
 
@@ -352,13 +357,8 @@ static void __time_critical_func(emulation_loop)(void) {
         sound_lines_per_frame = lines_per_frame;
         sound_frame_ready = true;
         
-        // Simple frame timing - target ~60 FPS
-        static uint64_t last_frame = 0;
-        uint64_t now = time_us_64();
-        if (now - last_frame < 16666) {
-            sleep_us(16666 - (now - last_frame));
-        }
-        last_frame = time_us_64();
+        // No frame timing - let it run as fast as possible
+        // The HDMI refresh will naturally pace things
     }
 }
 
