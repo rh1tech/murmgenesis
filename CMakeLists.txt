@@ -51,9 +51,6 @@ endif()
 add_subdirectory(src/fatfs)
 # Add drivers
 add_subdirectory(drivers/sdcard)
-add_subdirectory(drivers/ps2kbd)
-add_subdirectory(drivers/ps2mouse)
-add_subdirectory(drivers/usbhid)
 
 # Create a library for other drivers
 add_library(drivers
@@ -175,21 +172,12 @@ target_link_libraries(murmgenesis
     hardware_pwm
     hardware_irq
     sdcard
-    ps2kbd
-    ps2mouse
-    usbhid
     fatfs
     drivers
 )
 
-# USB stdio configuration
-if(USB_HID_ENABLED)
-    message(STATUS "USB HID enabled: Using UART for stdio (USB is Host mode)")
-    pico_enable_stdio_usb(murmgenesis 0)
-    pico_enable_stdio_uart(murmgenesis 1)
-else()
-    pico_enable_stdio_usb(murmgenesis 1)
-    pico_enable_stdio_uart(murmgenesis 0)
-endif()
+# Use USB for stdio output
+pico_enable_stdio_usb(murmgenesis 1)
+pico_enable_stdio_uart(murmgenesis 0)
 
 pico_add_extra_outputs(murmgenesis)
