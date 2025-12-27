@@ -357,8 +357,13 @@ static void __time_critical_func(emulation_loop)(void) {
         sound_lines_per_frame = lines_per_frame;
         sound_frame_ready = true;
         
-        // No frame timing - let it run as fast as possible
-        // The HDMI refresh will naturally pace things
+        // Frame timing to reduce memory bus contention
+        static uint64_t last_frame = 0;
+        uint64_t now = time_us_64();
+        if (now - last_frame < 16666) {
+            sleep_us(16666 - (now - last_frame));
+        }
+        last_frame = time_us_64();
     }
 }
 
