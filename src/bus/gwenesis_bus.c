@@ -379,16 +379,21 @@ unsigned int gwenesis_bus_map_address(unsigned int address) {
 static inline unsigned int gwenesis_bus_read_memory_8(unsigned int address) {
  bus_log(__FUNCTION__,"read8  %x", address);
 
+  // Fast path for ROM reads (most common during gameplay/loading)
+  if ((address & 0xFF0000) < 0x800000) {
+    return FETCH8ROM(address);
+  }
+  
+  // Fast path for RAM reads
+  if ((address & 0xFF0000) == 0xFF0000) {
+    return FETCH8RAM(address);
+  }
+
+  // Slow path for other addresses
   switch (gwenesis_bus_map_address(address)) {
   
   case VDP_ADDR:
     return gwenesis_vdp_read_memory_8(address);
-
-  case ROM_ADDR:
-    return FETCH8ROM(address);
-
-  case RAM_ADDR:
-    return FETCH8RAM(address);
 
   case IO_CTRL:
     return gwenesis_io_read_ctrl(address & 0x1F);
@@ -424,18 +429,22 @@ static inline unsigned int gwenesis_bus_read_memory_8(unsigned int address) {
 
 static inline unsigned int gwenesis_bus_read_memory_16(unsigned int address) {
    bus_log(__FUNCTION__,"read16 %x", address);
-   unsigned int ret_value;
 
+  // Fast path for ROM reads (most common during gameplay/loading)
+  if ((address & 0xFF0000) < 0x800000) {
+    return FETCH16ROM(address);
+  }
+  
+  // Fast path for RAM reads (second most common)
+  if ((address & 0xFF0000) == 0xFF0000) {
+    return FETCH16RAM(address);
+  }
+
+  // Slow path for other addresses
   switch (gwenesis_bus_map_address(address)) {
 
   case VDP_ADDR:
     return gwenesis_vdp_read_memory_16(address);
-
-  case RAM_ADDR:
-    return FETCH16RAM(address);
-
-  case ROM_ADDR:
-    return FETCH16ROM(address);
 
   case IO_CTRL:
     return gwenesis_io_read_ctrl(address & 0x1F);
@@ -452,8 +461,10 @@ static inline unsigned int gwenesis_bus_read_memory_16(unsigned int address) {
     return ZRAM[address & 0X1FFF] | (ZRAM[address & 0X1FFF] << 8);
 
   case Z80_YM2612_ADDR:
-    ret_value = YM2612Read(m68k_cycles_master());
-    return ret_value | ret_value << 8;
+    {
+      unsigned int rv = YM2612Read(m68k_cycles_master());
+      return rv | rv << 8;
+    }
 
 
   case Z80_SN76489_ADDR:

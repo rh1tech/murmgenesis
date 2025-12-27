@@ -61,8 +61,9 @@
 /* If ON, the CPU will generate address error exceptions if it tries to
  * access a word or longword at an odd address.
  * NOTE: This is only emulated properly for 68000 mode.
+ * DISABLED FOR SPEED - most games don't need this
  */
-#define M68K_EMULATE_ADDRESS_ERROR  OPT_ON
+#define M68K_EMULATE_ADDRESS_ERROR  OPT_OFF
 
 /* If ON and previous option is also ON, address error exceptions will
    also be checked when fetching instructions. Disabling this can help
