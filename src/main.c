@@ -46,6 +46,7 @@ static semaphore_t render_start_semaphore;
 // Sound processing synchronization
 static volatile bool sound_frame_ready = false;
 static volatile int sound_lines_per_frame = LINES_PER_FRAME_NTSC;
+static volatile int sound_screen_height = 224;
 
 // ROM buffer in PSRAM
 static uint8_t *rom_buffer = NULL;
@@ -211,21 +212,10 @@ static void setup_genesis_palette(void) {
     }
 }
 
-// Video rendering and sound processing on core 1
-static void __scratch_x("render") render_core(void) {
+// Sound processing on Core 1 (Z80 + YM2612 + SN76489 + I2S)
+static void __scratch_x("sound") sound_core(void) {
     // Allow core 0 to pause this core during flash operations
     multicore_lockout_victim_init();
-    
-    // Initialize graphics
-    graphics_init(g_out_HDMI);
-    
-    // Set up screen buffer - use the static SCREEN array
-    uint8_t *buffer = (uint8_t *)SCREEN;
-    graphics_set_buffer(buffer);
-    graphics_set_res(SCREEN_WIDTH, SCREEN_HEIGHT);
-    graphics_set_shift(0, 0);
-    
-    setup_genesis_palette();
     
     // Initialize audio on Core 1
     audio_init();
@@ -233,7 +223,7 @@ static void __scratch_x("render") render_core(void) {
     // Signal that we're ready
     sem_release(&render_start_semaphore);
     
-    // Core 1 loop - process sound and feed I2S
+    // Core 1 loop - runs Z80 + sound chips (complete sound subsystem)
     while (1) {
         // Check if Core 0 has completed a frame
         if (sound_frame_ready) {
@@ -245,20 +235,34 @@ static void __scratch_x("render") render_core(void) {
             ym2612_clock = 0;
             ym2612_index = 0;
             
-            // Run sound chips for entire frame
+            // Run Z80 + sound chips for entire frame
+            // Z80 is the sound coprocessor that controls the sound chips
             for (int line = 0; line < lpf; line++) {
                 int line_clock = (line + 1) * VDP_CYCLES_PER_LINE;
+                
+                // Run Z80 for this scanline
+                z80_run(line_clock);
+                
+                // Run sound chips
                 gwenesis_SN76489_run(line_clock);
                 ym2612_run(line_clock);
+                
+                // Handle Z80 IRQ at vblank
+                if (line == sound_screen_height) {
+                    z80_irq_line(1);
+                }
+                if (line == sound_screen_height + 1) {
+                    z80_irq_line(0);
+                }
             }
             
-            // Mix to ring buffer
+            // Mix and output audio
             audio_update();
             
             sound_frame_ready = false;
         }
         
-        // Continuously feed I2S from ring buffer at constant rate
+        // Continuously feed I2S buffers
         audio_buffer_t *buffer = take_audio_buffer(audio_get_producer_pool(), false);
         if (buffer != NULL) {
             audio_fill_buffer(buffer);
@@ -303,8 +307,7 @@ static void __time_critical_func(emulation_loop)(void) {
             // Run M68K for one line
             m68k_run(system_clock + VDP_CYCLES_PER_LINE);
             
-            // Run Z80
-            z80_run(system_clock + VDP_CYCLES_PER_LINE);
+            // Z80 runs on Core 1 with sound chips
             
             // Render line
             if (scan_line < screen_height) {
@@ -333,11 +336,7 @@ static void __time_critical_func(emulation_loop)(void) {
                     gwenesis_vdp_status |= STATUS_VIRQPENDING;
                     m68k_set_irq(6);
                 }
-                z80_irq_line(1);
-            }
-            
-            if (scan_line == screen_height + 1) {
-                z80_irq_line(0);
+                // Z80 IRQ handled on Core 1
             }
             
             // Sound chips run on Core 1 - no sound processing here
@@ -348,7 +347,8 @@ static void __time_critical_func(emulation_loop)(void) {
         frame_counter++;
         m68k.cycles -= system_clock;
         
-        // Signal Core 1 to process sound for this frame
+        // Signal Core 1 to process Z80 + sound for this frame
+        sound_screen_height = screen_height;
         sound_lines_per_frame = lines_per_frame;
         sound_frame_ready = true;
         
@@ -408,16 +408,29 @@ int main(void) {
     }
     LOG("SD card mounted\n");
     
-    // Initialize semaphore for render core sync
+    // Initialize HDMI on Core 0 - DMA IRQ is timing-critical
+    LOG("Initializing HDMI...\n");
+    graphics_init(g_out_HDMI);
+    
+    // Set up screen buffer
+    uint8_t *buffer = (uint8_t *)SCREEN;
+    graphics_set_buffer(buffer);
+    graphics_set_res(SCREEN_WIDTH, SCREEN_HEIGHT);
+    graphics_set_shift(0, 0);
+    
+    setup_genesis_palette();
+    LOG("HDMI initialized\n");
+    
+    // Initialize semaphore for sound core sync
     sem_init(&render_start_semaphore, 0, 1);
     
-    // Launch render core
-    LOG("Starting render core...\n");
-    multicore_launch_core1(render_core);
+    // Launch Core 1 (Z80 + sound only, no HDMI)
+    LOG("Starting sound core...\n");
+    multicore_launch_core1(sound_core);
     
-    // Wait for render core to be ready
+    // Wait for Core 1 to be ready
     sem_acquire_blocking(&render_start_semaphore);
-    LOG("Render core started\n");
+    LOG("Sound core started\n");
     
     // Load ROM
     LOG("Loading ROM...\n");
