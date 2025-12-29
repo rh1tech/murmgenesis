@@ -47,7 +47,7 @@ __license__ = "GPLv3"
 // When 0, audio is generated in bulk per frame instead of on every register write
 #define GWENESIS_AUDIO_ACCURATE 0
 
-#define Z80_FREQ_DIVISOR 14     // Frequency divisor to Z80 clock
+#define Z80_FREQ_DIVISOR 2      // Frequency divisor to Z80 clock (M68K 7.67MHz / Z80 3.58MHz ≈ 2.14)
 #define VDP_CYCLES_PER_LINE 3420// VDP Cycles per Line
 #define SCREEN_WIDTH 320
 #define GWENESIS_SCREEN_WIDTH 320
