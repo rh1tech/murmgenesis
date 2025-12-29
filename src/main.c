@@ -318,6 +318,13 @@ static void __scratch_x("sound") sound_core(void) {
             // Mix and output audio
             audio_update();
             
+            // Debug first few frames
+            static int sound_debug_count = 0;
+            if (sound_debug_count < 3) {
+                audio_debug_buffer_values();
+                sound_debug_count++;
+            }
+            
             last_sound_frame += sound_frame_period;
         }
         

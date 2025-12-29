@@ -52,5 +52,6 @@ void audio_set_enabled(bool enabled);
 
 // Check if audio is enabled
 bool audio_is_enabled(void);
+void audio_debug_buffer_values(void);
 
 #endif // AUDIO_H

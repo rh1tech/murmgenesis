@@ -650,6 +650,7 @@ typedef struct
   INT32 dacout; /* DAC output */
   FM_OPN OPN;   /* OPN state */
   UINT32 divisor; /* sample rate divsor in system clock */
+  UINT32 dac_stable_counter; /* DAC enable stability counter */
 
 } YM2612;
 
@@ -1990,6 +1991,7 @@ void YM2612ResetChip(void)
 
   ym2612.dacen            = 0;
   ym2612.dacout           = 0;
+  ym2612.dac_stable_counter = 0;
 
   set_timers(0x30);
   ym2612.OPN.ST.TB = 0;
@@ -2200,8 +2202,31 @@ void YM2612Write(unsigned int a, unsigned int v,  int target)
             ym2612.dacout =((int)v - 0x80) << 6; /* convert to 14-bit signed output */
             break;
           case 0x2b: /* DAC Sel  (ym2612) */
-            /* b7 = dac enable */
-            ym2612.dacen = v & 0x80;
+            /* b7 = dac enable - with hysteresis to prevent rapid toggling */
+            {
+              uint8_t new_dacen = v & 0x80;
+              static int toggle_count = 0;
+              
+              // Require stability - ignore rapid toggles
+              if (new_dacen != ym2612.dacen) {
+                if (ym2612.dac_stable_counter < 100) {
+                  // Not stable yet, increment counter
+                  ym2612.dac_stable_counter++;
+                } else {
+                  // Stable, allow the change
+                  if (toggle_count < 5) {
+                    printf("DAC enable stable change #%d: %s -> %s\n", 
+                           toggle_count, ym2612.dacen ? "ON" : "OFF", new_dacen ? "ON" : "OFF");
+                    toggle_count++;
+                  }
+                  ym2612.dacen = new_dacen;
+                  ym2612.dac_stable_counter = 0;
+                }
+              } else {
+                // Same state requested, reset counter
+                ym2612.dac_stable_counter = 0;
+              }
+            }
             break;
           default: /* OPN section */
             /* write register */

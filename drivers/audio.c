@@ -86,6 +86,7 @@ static inline int16_t clamp_s16(int32_t v) {
 // Audio mixing - direct from sound chip buffers
 //=============================================================================
 
+static int debug_frame_count = 0;
 static void mix_audio_buffer(audio_buffer_t *buffer) {
     int16_t *samples = (int16_t *)buffer->buffer->bytes;
     int sample_count = buffer->max_sample_count;
@@ -114,6 +115,39 @@ static void mix_audio_buffer(audio_buffer_t *buffer) {
         buffer->sample_count = sample_count;
         give_audio_buffer(producer_pool, buffer);
         return;
+    }
+    
+    // Debug first few frames
+    static bool debug_done = false;
+    if (!debug_done && debug_frame_count < 3 && ym_samples > 10) {
+        printf("\n=== Audio mix #%d ===\n", debug_frame_count);
+        printf("Samples: ym=%d, sn=%d, available=%d, buffer_max=%d\n", 
+               ym_samples, sn_samples, available_samples, sample_count);
+        
+        // Analyze YM2612 buffer for range and clipping
+        int16_t min_val = 32767, max_val = -32768;
+        int32_t sum = 0;
+        int clip_count = 0;
+        for (int i = 0; i < ym_samples; i++) {
+            int16_t val = gwenesis_ym2612_buffer[i];
+            if (val < min_val) min_val = val;
+            if (val > max_val) max_val = val;
+            sum += val;
+            if (val <= -32768 || val >= 32767) clip_count++;
+        }
+        int16_t avg = sum / ym_samples;
+        printf("YM2612: min=%d, max=%d, avg=%d, clips=%d/%d (%.1f%%)\n", 
+               min_val, max_val, avg, clip_count, ym_samples, 
+               (clip_count * 100.0) / ym_samples);
+        
+        printf("First 20 samples: ");
+        for (int i = 0; i < 20 && i < ym_samples; i++) {
+            printf("%d ", gwenesis_ym2612_buffer[i]);
+        }
+        printf("\n");
+        
+        debug_frame_count++;
+        if (debug_frame_count >= 3) debug_done = true;
     }
     
     // Mix both sound chips
@@ -253,4 +287,14 @@ void audio_set_enabled(bool enabled) {
 
 bool audio_is_enabled(void) {
     return audio_enabled;
+}
+
+void audio_debug_buffer_values(void) {
+    if (ym2612_index > 0) {
+        printf("YM2612 buffer samples: ");
+        for (int i = 0; i < 20 && i < ym2612_index; i++) {
+            printf("%d ", gwenesis_ym2612_buffer[i]);
+        }
+        printf("\n");
+    }
 }
