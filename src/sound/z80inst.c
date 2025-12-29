@@ -31,10 +31,10 @@ __license__ = "GPLv3"
   #pragma GCC optimize("Ofast")
 #endif
 
-static int bus_ack = 0;
-static int reset = 0;
-static int reset_once = 0;
-int zclk = 0;
+static volatile int bus_ack = 0;
+static volatile int reset = 0;
+static volatile int reset_once = 0;
+volatile int zclk = 0;
 static int initialized = 0;
 
 unsigned char *Z80_RAM;
@@ -65,7 +65,7 @@ void z80_log(const char *subs, const char *fmt, ...) {
 #endif
 
 // Bank register used by Z80 to access M68K Memory space 1 BANK=32KByte
-int Z80_BANK;
+volatile int Z80_BANK;
 
 
 void z80_start() {

@@ -517,11 +517,19 @@ static inline void gwenesis_bus_write_memory_8(unsigned int address,
   case Z80_YM2612_ADDR:
     bus_log(__FUNCTION__,"CPUZ80PSG8 ,m68kclk= %d", m68k_cycles_master());
     YM2612Write(address & 0x3, value & 0Xff,m68k_cycles_master());
+    static uint32_t ym_bus_writes = 0;
+    if ((++ym_bus_writes % 1000) == 0) {
+        printf("YM2612 bus writes (8-bit): %lu\n", (unsigned long)ym_bus_writes);
+    }
     return;
 
   case Z80_SN76489_ADDR:
     bus_log(__FUNCTION__,"CPUZ80FM8  ,m68kclk= %d", m68k_cycles_master());
     gwenesis_SN76489_Write( value & 0Xff, m68k_cycles_master());
+    static uint32_t sn_bus_writes_8 = 0;
+    if ((++sn_bus_writes_8 % 1000) == 0) {
+        printf("SN76489 bus writes (8-bit): %lu\n", (unsigned long)sn_bus_writes_8);
+    }
     return;
 
   case Z80_BANK_ADDR:
@@ -577,11 +585,19 @@ static inline void gwenesis_bus_write_memory_16(unsigned int address,
   case Z80_YM2612_ADDR:
     bus_log(__FUNCTION__,"CZYM16 ,mclk=%d",  m68k_cycles_master());
     YM2612Write(address & 0x3, value >> 8,m68k_cycles_master() );
+    static uint32_t ym_bus_writes_16 = 0;
+    if ((++ym_bus_writes_16 % 1000) == 0) {
+        printf("YM2612 bus writes (16-bit): %lu\n", (unsigned long)ym_bus_writes_16);
+    }
     return;
 
   case Z80_SN76489_ADDR:
     bus_log(__FUNCTION__,"CZSN16 ,mclk=%d", m68k_cycles_master());
     gwenesis_SN76489_Write(value >> 8,m68k_cycles_master() );
+    static uint32_t sn_bus_writes = 0;
+    if ((++sn_bus_writes % 1000) == 0) {
+        printf("SN76489 bus writes: %lu\n", (unsigned long)sn_bus_writes);
+    }
     return;
 
   default:

@@ -134,15 +134,15 @@ static int16_t __not_in_flash("audio") gwenesis_ym2612_buffer_mem[GWENESIS_AUDIO
 int16_t *gwenesis_sn76489_buffer = gwenesis_sn76489_buffer_mem;
 int16_t *gwenesis_ym2612_buffer = gwenesis_ym2612_buffer_mem;
 
-int sn76489_index;
-int sn76489_clock;
+volatile int sn76489_index;
+volatile int sn76489_clock;
 
-int ym2612_index;
-int ym2612_clock;
+volatile int ym2612_index;
+volatile int ym2612_clock;
 
 // Audio enabled flags
-bool audio_enabled = false;
-bool sn76489_enabled = false;
+bool audio_enabled = true;
+bool sn76489_enabled = true;
 
 // Timing
 int system_clock;
@@ -299,19 +299,18 @@ static void __scratch_x("sound") sound_core(void) {
         if (now >= last_sound_frame + sound_frame_period) {
             int lpf = sound_lines_per_frame;
             
+            // Z80 now runs on Core 0 to avoid multi-core sync issues
+            
             // Reset sound chip indices for this frame
             sn76489_clock = 0;
             sn76489_index = 0;
             ym2612_clock = 0;
             ym2612_index = 0;
             
-            // Run Z80 + sound chips for entire frame
-            // Z80 is the sound coprocessor that controls the sound chips
+            // Run sound chips for entire frame
+            // Sound chips generate audio based on writes from Z80 (running on Core 0)
             for (int line = 0; line < lpf; line++) {
                 int line_clock = (line + 1) * VDP_CYCLES_PER_LINE;
-                
-                // Run Z80 for this scanline
-                z80_run(line_clock);
                 
                 // Run sound chips
                 gwenesis_SN76489_run(line_clock);
@@ -375,13 +374,19 @@ static void __time_critical_func(emulation_loop)(void) {
         system_clock = 0;
         scan_line = 0;
         
+        // Reset Z80 clock for new frame (now runs on Core 0)
+        extern volatile int zclk;
+        zclk = 0;
+        
         while (scan_line < lines_per_frame) {
             // Run M68K for one line
             PROFILE_START();
             m68k_run(system_clock + VDP_CYCLES_PER_LINE);
             PROFILE_END(m68k_time);
             
-            // Z80 runs on Core 1 with sound chips
+            // Run Z80 for one line (moved to Core 0 to avoid multi-core sync issues)
+            int line_clock = (scan_line + 1) * VDP_CYCLES_PER_LINE;
+            z80_run(line_clock);
             
             // Render line (60 fps: render all frames)
             if (scan_line < screen_height) {

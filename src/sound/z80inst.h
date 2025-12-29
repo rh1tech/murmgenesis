@@ -25,7 +25,7 @@ void z80_start();
 void z80_pulse_reset();
 void z80_execute(unsigned int target);
 void z80_run(int target);
-extern int zclk;
+extern volatile int zclk;
 
 void gwenesis_z80inst_save_state();
 void gwenesis_z80inst_load_state();

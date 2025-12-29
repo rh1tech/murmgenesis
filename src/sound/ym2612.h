@@ -17,8 +17,8 @@
 #define _H_YM2612_
 
 extern int16_t *gwenesis_ym2612_buffer;
-extern int ym2612_index;
-extern int ym2612_clock;
+extern volatile int ym2612_index;
+extern volatile int ym2612_clock;
 
 extern void YM2612Init(void);
 extern void YM2612Config(unsigned char dac_bits); //,unsigned int AUDIO_FREQ_DIVISOR);
