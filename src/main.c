@@ -46,7 +46,7 @@
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 
 #define ENABLE_PROFILING 0
-#define DISABLE_FRAME_LIMITING 0  // Re-enable frame limiter
+#define DISABLE_FRAME_LIMITING 0
 
 // Emulation speed control (in percentage: 100 = normal, 50 = half speed, 150 = 1.5x speed)
 #define EMULATION_SPEED_PERCENT 100
@@ -58,6 +58,10 @@ typedef struct {
     uint64_t frame_time;
     uint64_t idle_time;
     uint32_t frame_count;
+    uint64_t min_frame_time;
+    uint64_t max_frame_time;
+    uint32_t slow_frames;  // Frames that took > 17ms
+    uint32_t fast_frames;  // Frames that took < 16ms
 } profile_stats_t;
 
 static profile_stats_t profile_stats = {0};
@@ -67,7 +71,17 @@ static uint64_t profile_section_start = 0;
 #define PROFILE_START() profile_section_start = time_us_64()
 #define PROFILE_END(stat) profile_stats.stat += (time_us_64() - profile_section_start)
 #define PROFILE_FRAME_START() profile_frame_start = time_us_64()
-#define PROFILE_FRAME_END() profile_stats.frame_time += (time_us_64() - profile_frame_start); profile_stats.frame_count++
+#define PROFILE_FRAME_END() do { \
+  uint64_t frame_duration = time_us_64() - profile_frame_start; \
+  profile_stats.frame_time += frame_duration; \
+  if (profile_stats.frame_count == 0 || frame_duration < profile_stats.min_frame_time) \
+    profile_stats.min_frame_time = frame_duration; \
+  if (frame_duration > profile_stats.max_frame_time) \
+    profile_stats.max_frame_time = frame_duration; \
+  if (frame_duration > 17000) profile_stats.slow_frames++; \
+  if (frame_duration < 16000) profile_stats.fast_frames++; \
+  profile_stats.frame_count++; \
+} while(0)
 
 static void print_profiling_stats(void) {
     if (profile_stats.frame_count == 0) return;
@@ -84,8 +98,13 @@ static void print_profiling_stats(void) {
     LOG("Idle/sync:       %6lu us (%3d%%)\n", 
         (unsigned long)(profile_stats.idle_time / profile_stats.frame_count),
         (int)((profile_stats.idle_time * 100) / total));
-    LOG("Total frame:     %6lu us\n", (unsigned long)(total / profile_stats.frame_count));
-    LOG("Frame rate:      %6.2f fps\n", 1000000.0 / (total / (float)profile_stats.frame_count));
+    LOG("Total frame:     %6lu us (min=%lu, max=%lu)\n", 
+        (unsigned long)(total / profile_stats.frame_count),
+        (unsigned long)profile_stats.min_frame_time,
+        (unsigned long)profile_stats.max_frame_time);
+    LOG("Frame rate:      %6.2f fps (target=60.00)\n", 1000000.0 / (total / (float)profile_stats.frame_count));
+    LOG("Frame variance:  slow=%u (>17ms), fast=%u (<16ms)\n",
+        profile_stats.slow_frames, profile_stats.fast_frames);
     LOG("================================================\n\n");
     
     // Reset stats
@@ -435,11 +454,21 @@ static void __time_critical_func(emulation_loop)(void) {
         
 #if !DISABLE_FRAME_LIMITING
         // Frame timing - adjust based on EMULATION_SPEED_PERCENT
-        static uint64_t last_frame = 0;
+        static uint64_t first_frame = 0;
+        static uint32_t frame_num = 0;
         uint64_t now = time_us_64();
+        
         // Calculate frame period based on emulation speed (16666us at 100%)
         uint64_t frame_period = (16666 * 100) / EMULATION_SPEED_PERCENT;
-        uint64_t target_time = last_frame + frame_period;
+        
+        // Initialize timing on first frame
+        if (frame_num == 0) {
+            first_frame = now;
+        }
+        
+        // Calculate absolute target time based on frame number to prevent drift
+        frame_num++;
+        uint64_t target_time = first_frame + (frame_num * frame_period);
         
         // Wait until target time
         while (time_us_64() < target_time) {
@@ -453,7 +482,10 @@ static void __time_critical_func(emulation_loop)(void) {
             }
         }
         
-        last_frame = target_time;
+        // If we're more than 2 frames behind, resync (prevents catchup spirals)
+        if (now > target_time + (frame_period * 2)) {
+            frame_num = 0;  // Force resync on next frame
+        }
 #endif
         
         PROFILE_FRAME_END();
