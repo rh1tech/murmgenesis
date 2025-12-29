@@ -43,7 +43,7 @@
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 
 #define ENABLE_PROFILING 0
-#define DISABLE_FRAME_LIMITING 1  // Disable frame limiter to prevent audio interference
+#define DISABLE_FRAME_LIMITING 0  // Re-enable frame limiter
 
 #if ENABLE_PROFILING
 typedef struct {
@@ -419,23 +419,24 @@ static void __time_critical_func(emulation_loop)(void) {
         sound_frame_ready = true;
         
 #if !DISABLE_FRAME_LIMITING
-        // Frame timing to reduce memory bus contention
-        // Use WFI (Wait For Interrupt) to sleep but remain responsive to audio DMA
+        // Frame timing - use minimal interference approach
         static uint64_t last_frame = 0;
+        uint64_t now = time_us_64();
         uint64_t target_time = last_frame + 16666;
         
-        // Sleep in small chunks to remain responsive
-        while (time_us_64() < target_time) {
-            uint64_t remaining = target_time - time_us_64();
-            if (remaining > 100) {
-                // Sleep for small intervals, allowing interrupts
-                __wfi();  // Wait for interrupt - very low power, wakes on any interrupt
-            } else {
-                // Final microseconds - busy wait for precision
-                tight_loop_contents();
-            }
+        // Only wait if we're more than 500us ahead (allows some jitter for audio)
+        if (now < target_time - 500) {
+            // Yield to let other processes (audio DMA) run
+            sleep_us(1);  // Very short sleep, just yield time slice
+        } else {
+            // Close to target time - just update and continue
+            last_frame = now;
         }
-        last_frame = target_time;
+        
+        // Update last_frame when we hit or pass target
+        if (now >= target_time) {
+            last_frame = target_time;
+        }
 #endif
         
         PROFILE_FRAME_END();
