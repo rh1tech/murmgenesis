@@ -43,7 +43,7 @@
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 
 #define ENABLE_PROFILING 0
-#define DISABLE_FRAME_LIMITING 0  // Re-enable frame limiter for normal gameplay
+#define DISABLE_FRAME_LIMITING 1  // Disable frame limiter to prevent audio interference
 
 #if ENABLE_PROFILING
 typedef struct {
