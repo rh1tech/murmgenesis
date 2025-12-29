@@ -45,6 +45,9 @@
 #define ENABLE_PROFILING 0
 #define DISABLE_FRAME_LIMITING 0  // Re-enable frame limiter
 
+// Emulation speed control (in percentage: 100 = normal, 50 = half speed, 150 = 1.5x speed)
+#define EMULATION_SPEED_PERCENT 100
+
 #if ENABLE_PROFILING
 typedef struct {
     uint64_t m68k_time;
@@ -420,9 +423,12 @@ static void __time_critical_func(emulation_loop)(void) {
         
 #if !DISABLE_FRAME_LIMITING
         // Frame timing - use minimal interference approach
+        // Adjust timing based on EMULATION_SPEED_PERCENT
         static uint64_t last_frame = 0;
         uint64_t now = time_us_64();
-        uint64_t target_time = last_frame + 16666;
+        // Calculate frame period based on emulation speed (16666us at 100%)
+        uint64_t frame_period = (16666 * 100) / EMULATION_SPEED_PERCENT;
+        uint64_t target_time = last_frame + frame_period;
         
         // Only wait if we're more than 500us ahead (allows some jitter for audio)
         if (now < target_time - 500) {
