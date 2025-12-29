@@ -86,7 +86,6 @@ int system_clock;
 unsigned int lines_per_frame = LINES_PER_FRAME_NTSC;
 int scan_line;
 unsigned int frame_counter = 0;
-unsigned int drawFrame = 1;
 
 // FatFS
 static FATFS fs;
@@ -314,8 +313,8 @@ static void __time_critical_func(emulation_loop)(void) {
             
             // Z80 runs on Core 1 with sound chips
             
-            // Render line
-            if (scan_line < screen_height) {
+            // Render line (skip odd frames: 1, 3, 5, ...)
+            if ((frame_counter & 1) == 0 && scan_line < screen_height) {
                 gwenesis_vdp_render_line(scan_line);
             }
             

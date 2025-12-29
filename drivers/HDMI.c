@@ -90,6 +90,9 @@ static uint32_t palette[256];
 // Color substitution map for HDMI reserved indices 240-243
 static uint8_t color_substitute[4] = {239, 239, 239, 239};
 
+// Assembly function declarations
+extern void hdmi_memset_fast(uint8_t* dst, uint8_t val, uint32_t count);
+extern uint64_t get_ser_diff_data_asm(uint16_t dataR, uint16_t dataG, uint16_t dataB);
 
 #define SCREEN_WIDTH (320)
 #define SCREEN_HEIGHT (240)
@@ -254,7 +257,7 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
         uint8_t* input_buffer = get_line_buffer(y);
         if (!input_buffer) {
             // Fill with background color (palette 255) if line is outside graphics buffer
-            memset(activ_buf + 72, 255, SCREEN_WIDTH);
+            hdmi_memset_fast(activ_buf + 72, 255, SCREEN_WIDTH);
         } else {
         switch (hdmi_graphics_mode) {
             case GRAPHICSMODE_DEFAULT:
@@ -262,7 +265,7 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                 if (false || (graphics_buffer_shift_y > y) || (y >= (graphics_buffer_shift_y + graphics_buffer_height))
                     || (graphics_buffer_shift_x >= SCREEN_WIDTH) || (
                         (graphics_buffer_shift_x + graphics_buffer_width) < 0)) {
-                    memset(output_buffer, 255, SCREEN_WIDTH);
+                    hdmi_memset_fast(output_buffer, 255, SCREEN_WIDTH);
                     break;
                 }
 
@@ -309,9 +312,9 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
 
         // --|_|---|_|---|_|----
         //---|___________|-----
-        memset(activ_buf + 48,BASE_HDMI_CTRL_INX, 24);
-        memset(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
-        memset(activ_buf + 392,BASE_HDMI_CTRL_INX, 8);
+        hdmi_memset_fast(activ_buf + 48, BASE_HDMI_CTRL_INX, 24);
+        hdmi_memset_fast(activ_buf, BASE_HDMI_CTRL_INX + 1, 48);
+        hdmi_memset_fast(activ_buf + 392, BASE_HDMI_CTRL_INX, 8);
 
         //без выравнивания
         // --|_|---|_|---|_|----
@@ -326,8 +329,8 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
             //для выравнивания синхры
             // --|_|---|_|---|_|----
             //---|___________|-----
-            memset(activ_buf + 48,BASE_HDMI_CTRL_INX + 2, 352);
-            memset(activ_buf,BASE_HDMI_CTRL_INX + 3, 48);
+            hdmi_memset_fast(activ_buf + 48, BASE_HDMI_CTRL_INX + 2, 352);
+            hdmi_memset_fast(activ_buf, BASE_HDMI_CTRL_INX + 3, 48);
             //без выравнивания
             // --|_|---|_|---|_|----
             //-------|___________|----
@@ -340,8 +343,8 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
             //ССИ без изображения
             //для выравнивания синхры
 
-            memset(activ_buf + 48,BASE_HDMI_CTRL_INX, 352);
-            memset(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
+            hdmi_memset_fast(activ_buf + 48, BASE_HDMI_CTRL_INX, 352);
+            hdmi_memset_fast(activ_buf, BASE_HDMI_CTRL_INX + 1, 48);
 
             // memset(activ_buf,BASE_HDMI_CTRL_INX,328);
             // memset(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
