@@ -51,6 +51,7 @@ endif()
 add_subdirectory(src/fatfs)
 # Add drivers
 add_subdirectory(drivers/sdcard)
+add_subdirectory(drivers/nespad)
 
 # Create a library for other drivers
 add_library(drivers
@@ -157,6 +158,10 @@ if(BOARD_VARIANT STREQUAL "M1")
         SDCARD_PIN_SPI0_SCK=2
         SDCARD_PIN_SPI0_MOSI=3
         SDCARD_PIN_SPI0_MISO=4
+        # NES/SNES Gamepad
+        NESPAD_GPIO_CLK=14
+        NESPAD_GPIO_LATCH=15
+        NESPAD_GPIO_DATA=16
     )
 elseif(BOARD_VARIANT STREQUAL "M2")
     target_compile_definitions(murmgenesis PRIVATE
@@ -182,6 +187,7 @@ target_link_libraries(murmgenesis
     sdcard
     fatfs
     drivers
+    nespad
 )
 
 # Use USB for stdio output
