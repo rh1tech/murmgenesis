@@ -35,6 +35,63 @@
 #include "pico/audio_i2s.h"
 #undef none
 
+//=============================================================================
+// Profiling
+//=============================================================================
+
+// Simple logging
+#define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
+
+#define ENABLE_PROFILING 1
+
+#if ENABLE_PROFILING
+typedef struct {
+    uint64_t m68k_time;
+    uint64_t vdp_time;
+    uint64_t frame_time;
+    uint64_t idle_time;
+    uint32_t frame_count;
+} profile_stats_t;
+
+static profile_stats_t profile_stats = {0};
+static uint64_t profile_frame_start = 0;
+static uint64_t profile_section_start = 0;
+
+#define PROFILE_START() profile_section_start = time_us_64()
+#define PROFILE_END(stat) profile_stats.stat += (time_us_64() - profile_section_start)
+#define PROFILE_FRAME_START() profile_frame_start = time_us_64()
+#define PROFILE_FRAME_END() profile_stats.frame_time += (time_us_64() - profile_frame_start); profile_stats.frame_count++
+
+static void print_profiling_stats(void) {
+    if (profile_stats.frame_count == 0) return;
+    
+    uint64_t total = profile_stats.frame_time;
+    
+    LOG("\n=== Profiling Stats (avg per frame over %u frames) ===\n", profile_stats.frame_count);
+    LOG("M68K execution:  %6lu us (%3d%%)\n", 
+        (unsigned long)(profile_stats.m68k_time / profile_stats.frame_count),
+        (int)((profile_stats.m68k_time * 100) / total));
+    LOG("VDP rendering:   %6lu us (%3d%%)\n", 
+        (unsigned long)(profile_stats.vdp_time / profile_stats.frame_count),
+        (int)((profile_stats.vdp_time * 100) / total));
+    LOG("Idle/sync:       %6lu us (%3d%%)\n", 
+        (unsigned long)(profile_stats.idle_time / profile_stats.frame_count),
+        (int)((profile_stats.idle_time * 100) / total));
+    LOG("Total frame:     %6lu us\n", (unsigned long)(total / profile_stats.frame_count));
+    LOG("Frame rate:      %6.2f fps\n", 1000000.0 / (total / (float)profile_stats.frame_count));
+    LOG("================================================\n\n");
+    
+    // Reset stats
+    memset(&profile_stats, 0, sizeof(profile_stats));
+}
+#else
+#define PROFILE_START() do {} while(0)
+#define PROFILE_END(stat) do {} while(0)
+#define PROFILE_FRAME_START() do {} while(0)
+#define PROFILE_FRAME_END() do {} while(0)
+#define print_profiling_stats() do {} while(0)
+#endif
+
 // Screen buffer - 320x240 8-bit indexed (static, not in PSRAM)
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
@@ -111,9 +168,6 @@ static void __no_inline_not_in_flash_func(set_flash_timings)(int cpu_mhz) {
                         rxdelay << QMI_M0_TIMING_RXDELAY_LSB |
                         divisor << QMI_M0_TIMING_CLKDIV_LSB;
 }
-
-// Simple logging
-#define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 
 // Load ROM from SD card
 static bool load_rom(const char *filename) {
@@ -304,18 +358,24 @@ static void __time_critical_func(emulation_loop)(void) {
             last_screen_height = screen_height;
         }
         
+        PROFILE_FRAME_START();
+        
         system_clock = 0;
         scan_line = 0;
         
         while (scan_line < lines_per_frame) {
             // Run M68K for one line
+            PROFILE_START();
             m68k_run(system_clock + VDP_CYCLES_PER_LINE);
+            PROFILE_END(m68k_time);
             
             // Z80 runs on Core 1 with sound chips
             
             // Render line (skip odd frames: 1, 3, 5, ...)
             if ((frame_counter & 1) == 0 && scan_line < screen_height) {
+                PROFILE_START();
                 gwenesis_vdp_render_line(scan_line);
+                PROFILE_END(vdp_time);
             }
             
             // Handle line counter interrupt
@@ -360,9 +420,18 @@ static void __time_critical_func(emulation_loop)(void) {
         static uint64_t last_frame = 0;
         uint64_t now = time_us_64();
         if (now - last_frame < 16666) {
+            PROFILE_START();
             sleep_us(16666 - (now - last_frame));
+            PROFILE_END(idle_time);
         }
         last_frame = time_us_64();
+        
+        PROFILE_FRAME_END();
+        
+        // Print profiling stats every 300 frames (~5 seconds at 60fps)
+        if ((frame_counter % 300) == 0) {
+            print_profiling_stats();
+        }
     }
 }
 
