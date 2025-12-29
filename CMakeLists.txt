@@ -7,10 +7,10 @@ set(PICO_BOARD pico2 CACHE STRING "Pico board type")
 set(BOARD_VARIANT "M1" CACHE STRING "Board variant: M1 or M2")
 
 # CPU overclock configuration (252, 378, 504 MHz)
-set(CPU_SPEED "252" CACHE STRING "CPU clock in MHz: 252, 378, 504")
+set(CPU_SPEED "504" CACHE STRING "CPU clock in MHz: 252, 378, 504")
 
 # PSRAM speed configuration (84, 100, 133, 166 MHz target)
-set(PSRAM_SPEED "133" CACHE STRING "PSRAM max frequency in MHz: 84, 100, 133, 166")
+set(PSRAM_SPEED "166" CACHE STRING "PSRAM max frequency in MHz: 84, 100, 133, 166")
 
 # CPU voltage selection based on speed
 if(CPU_SPEED GREATER_EQUAL 504)
