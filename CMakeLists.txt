@@ -91,6 +91,7 @@ set(GWENESIS_SOURCES
     src/bus/gwenesis_bus.c
     # CPUs
     src/cpus/M68K/m68kcpu.c
+    src/cpus/M68K/m68k_memory_opt.S
     src/cpus/Z80/Z80.c
     # IO
     src/io/gwenesis_io.c
@@ -103,6 +104,11 @@ set(GWENESIS_SOURCES
     src/vdp/gwenesis_vdp_mem.c
     # Savestate
     src/savestate/gwenesis_savestate.c
+)
+
+# Apply aggressive optimizations to M68K CPU
+set_source_files_properties(src/cpus/M68K/m68kcpu.c PROPERTIES
+    COMPILE_FLAGS "-O3 -ffast-math -funroll-loops -finline-functions"
 )
 
 add_executable(murmgenesis

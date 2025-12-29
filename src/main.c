@@ -43,6 +43,7 @@
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 
 #define ENABLE_PROFILING 1
+#define DISABLE_FRAME_LIMITING 1  // Disable frame limiter to see actual performance
 
 #if ENABLE_PROFILING
 typedef struct {
@@ -417,6 +418,7 @@ static void __time_critical_func(emulation_loop)(void) {
         sound_lines_per_frame = lines_per_frame;
         sound_frame_ready = true;
         
+#if !DISABLE_FRAME_LIMITING
         // Frame timing to reduce memory bus contention
         static uint64_t last_frame = 0;
         uint64_t now = time_us_64();
@@ -426,6 +428,7 @@ static void __time_critical_func(emulation_loop)(void) {
             PROFILE_END(idle_time);
         }
         last_frame = time_us_64();
+#endif
         
         PROFILE_FRAME_END();
         
