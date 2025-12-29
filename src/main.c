@@ -105,7 +105,6 @@ static uint8_t SCREEN[SCREEN_HEIGHT][SCREEN_WIDTH];
 static semaphore_t render_start_semaphore;
 
 // Sound processing synchronization
-static volatile bool sound_frame_ready = false;
 static volatile int sound_lines_per_frame = LINES_PER_FRAME_NTSC;
 static volatile int sound_screen_height = 224;
 
@@ -285,10 +284,16 @@ static void __scratch_x("sound") sound_core(void) {
     // Signal that we're ready
     sem_release(&render_start_semaphore);
     
+    // Sound runs at fixed 60Hz regardless of rendering speed
+    uint64_t last_sound_frame = time_us_64();
+    const uint64_t sound_frame_period = 16666; // 60Hz fixed
+    
     // Core 1 loop - runs Z80 + sound chips (complete sound subsystem)
     while (1) {
-        // Check if Core 0 has completed a frame
-        if (sound_frame_ready) {
+        uint64_t now = time_us_64();
+        
+        // Process sound frame at fixed 60Hz
+        if (now >= last_sound_frame + sound_frame_period) {
             int lpf = sound_lines_per_frame;
             
             // Reset sound chip indices for this frame
@@ -321,7 +326,7 @@ static void __scratch_x("sound") sound_core(void) {
             // Mix and output audio
             audio_update();
             
-            sound_frame_ready = false;
+            last_sound_frame += sound_frame_period;
         }
         
         // Continuously feed I2S buffers
@@ -416,33 +421,31 @@ static void __time_critical_func(emulation_loop)(void) {
         frame_counter++;
         m68k.cycles -= system_clock;
         
-        // Signal Core 1 to process Z80 + sound for this frame
+        // Update sound parameters (Core 1 runs independently)
         sound_screen_height = screen_height;
         sound_lines_per_frame = lines_per_frame;
-        sound_frame_ready = true;
         
 #if !DISABLE_FRAME_LIMITING
-        // Frame timing - use minimal interference approach
-        // Adjust timing based on EMULATION_SPEED_PERCENT
+        // Frame timing - adjust based on EMULATION_SPEED_PERCENT
         static uint64_t last_frame = 0;
         uint64_t now = time_us_64();
         // Calculate frame period based on emulation speed (16666us at 100%)
         uint64_t frame_period = (16666 * 100) / EMULATION_SPEED_PERCENT;
         uint64_t target_time = last_frame + frame_period;
         
-        // Only wait if we're more than 500us ahead (allows some jitter for audio)
-        if (now < target_time - 500) {
-            // Yield to let other processes (audio DMA) run
-            sleep_us(1);  // Very short sleep, just yield time slice
-        } else {
-            // Close to target time - just update and continue
-            last_frame = now;
+        // Wait until target time
+        while (time_us_64() < target_time) {
+            uint64_t remaining = target_time - time_us_64();
+            if (remaining > 1000) {
+                // Sleep for most of the wait, but in small chunks for audio responsiveness
+                sleep_us(500);
+            } else {
+                // Last millisecond - just yield
+                tight_loop_contents();
+            }
         }
         
-        // Update last_frame when we hit or pass target
-        if (now >= target_time) {
-            last_frame = target_time;
-        }
+        last_frame = target_time;
 #endif
         
         PROFILE_FRAME_END();
