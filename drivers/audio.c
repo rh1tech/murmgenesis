@@ -56,7 +56,7 @@
 
 static bool audio_initialized = false;
 static bool audio_enabled = true;
-static int master_volume = 128;  // 0-128
+static int master_volume = 64;  // 0-128 (half volume to prevent clipping)
 
 static struct audio_buffer_pool *producer_pool = NULL;
 

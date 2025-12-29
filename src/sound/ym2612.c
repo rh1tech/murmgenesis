@@ -2198,12 +2198,9 @@ void YM2612Write(unsigned int a, unsigned int v,  int target)
           {
           case 0x2a: /* DAC data (ym2612) */
             ym2612.dacout =((int)v - 0x80) << 6; /* convert to 14-bit signed output */
-            //ym2612.dacout = ((int)v - 0x80) * 64; /* convert to signed output */
-            //printf("WriteDAC : %x:%x\n",v,ym2612.dacout);
             break;
           case 0x2b: /* DAC Sel  (ym2612) */
             /* b7 = dac enable */
-            //printf("WriteDAC : %x:%x\n",v,ym2612.dacout);
             ym2612.dacen = v & 0x80;
             break;
           default: /* OPN section */

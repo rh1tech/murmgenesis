@@ -13,8 +13,9 @@
 struct audio_buffer_pool;
 struct audio_buffer;
 
-// Audio sample rate - Genesis runs at ~53267 Hz (NTSC)
-// We match this for accurate playback speed
+// Audio sample rate - Genesis NTSC runs at ~53211 Hz
+// (53693175 Hz master clock / 896040 cycles per frame * 888 samples per frame)
+// Using 53267 Hz to match original implementation
 #define AUDIO_SAMPLE_RATE 53267
 
 // Audio buffer size - samples per buffer

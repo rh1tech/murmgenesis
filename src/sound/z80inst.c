@@ -127,8 +127,6 @@ void z80_write_ctrl(unsigned int address, unsigned int value) {
 
   if (address == 0x1100) // BUSREQ
   {
-    z80_log(__FUNCTION__,"BUSREQ = %d, current=%d", value,bus_ack);
-
     // Bus request. Z80 bus on hold.
     if (value) {
       bus_ack = 1;
@@ -141,12 +139,9 @@ void z80_write_ctrl(unsigned int address, unsigned int value) {
 
   } else if (address == 0x1200) // RESET
   {
-    z80_log(__FUNCTION__,"RESET = %d, current=%d", value,reset);
-  
     if (value == 0) {
       reset = 1;
     } else {
-
       z80_pulse_reset();
       reset = 0;
       reset_once = 1;

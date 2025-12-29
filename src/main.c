@@ -299,30 +299,20 @@ static void __scratch_x("sound") sound_core(void) {
         if (now >= last_sound_frame + sound_frame_period) {
             int lpf = sound_lines_per_frame;
             
-            // Z80 now runs on Core 0 to avoid multi-core sync issues
-            
             // Reset sound chip indices for this frame
             sn76489_clock = 0;
             sn76489_index = 0;
             ym2612_clock = 0;
             ym2612_index = 0;
             
-            // Run sound chips for entire frame
-            // Sound chips generate audio based on writes from Z80 (running on Core 0)
+            // Sound chips generate samples based on their internal state
+            // (which was updated by Z80 writes from Core 0)
             for (int line = 0; line < lpf; line++) {
                 int line_clock = (line + 1) * VDP_CYCLES_PER_LINE;
                 
-                // Run sound chips
+                // Run sound chips to generate audio samples
                 gwenesis_SN76489_run(line_clock);
                 ym2612_run(line_clock);
-                
-                // Handle Z80 IRQ at vblank
-                if (line == sound_screen_height) {
-                    z80_irq_line(1);
-                }
-                if (line == sound_screen_height + 1) {
-                    z80_irq_line(0);
-                }
             }
             
             // Mix and output audio
@@ -417,7 +407,11 @@ static void __time_critical_func(emulation_loop)(void) {
                     gwenesis_vdp_status |= STATUS_VIRQPENDING;
                     m68k_set_irq(6);
                 }
-                // Z80 IRQ handled on Core 1
+                // Z80 IRQ for vblank (Z80 runs on Core 0)
+                z80_irq_line(1);
+            }
+            if (scan_line == screen_height + 1) {
+                z80_irq_line(0);
             }
             
             // Sound chips run on Core 1 - no sound processing here
