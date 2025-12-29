@@ -420,14 +420,20 @@ static void __time_critical_func(emulation_loop)(void) {
         
 #if !DISABLE_FRAME_LIMITING
         // Frame timing to reduce memory bus contention
-        // Use tight loop instead of sleep to avoid blocking audio
+        // Use WFI (Wait For Interrupt) to sleep but remain responsive to audio DMA
         static uint64_t last_frame = 0;
-        uint64_t now = time_us_64();
         uint64_t target_time = last_frame + 16666;
         
-        // Busy-wait for precise timing without blocking audio
+        // Sleep in small chunks to remain responsive
         while (time_us_64() < target_time) {
-            tight_loop_contents();
+            uint64_t remaining = target_time - time_us_64();
+            if (remaining > 100) {
+                // Sleep for small intervals, allowing interrupts
+                __wfi();  // Wait for interrupt - very low power, wakes on any interrupt
+            } else {
+                // Final microseconds - busy wait for precision
+                tight_loop_contents();
+            }
         }
         last_frame = target_time;
 #endif
