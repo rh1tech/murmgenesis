@@ -42,8 +42,8 @@
 // Simple logging
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 
-#define ENABLE_PROFILING 1
-#define DISABLE_FRAME_LIMITING 1  // Disable frame limiter to see actual performance
+#define ENABLE_PROFILING 0
+#define DISABLE_FRAME_LIMITING 0  // Re-enable frame limiter for normal gameplay
 
 #if ENABLE_PROFILING
 typedef struct {
