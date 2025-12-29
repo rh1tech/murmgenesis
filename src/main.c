@@ -420,14 +420,16 @@ static void __time_critical_func(emulation_loop)(void) {
         
 #if !DISABLE_FRAME_LIMITING
         // Frame timing to reduce memory bus contention
+        // Use tight loop instead of sleep to avoid blocking audio
         static uint64_t last_frame = 0;
         uint64_t now = time_us_64();
-        if (now - last_frame < 16666) {
-            PROFILE_START();
-            sleep_us(16666 - (now - last_frame));
-            PROFILE_END(idle_time);
+        uint64_t target_time = last_frame + 16666;
+        
+        // Busy-wait for precise timing without blocking audio
+        while (time_us_64() < target_time) {
+            tight_loop_contents();
         }
-        last_frame = time_us_64();
+        last_frame = target_time;
 #endif
         
         PROFILE_FRAME_END();
