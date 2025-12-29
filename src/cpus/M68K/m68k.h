@@ -154,6 +154,13 @@
 
 // 16/32 bits acces to RAM/ROM
 
+// Assembly-optimized memory access functions
+extern uint32_t m68k_read_rom16_fast(uint32_t address);
+extern uint32_t m68k_read_rom32_fast(uint32_t address);
+extern uint32_t m68k_read_ram16_fast(uint32_t address);
+extern void m68k_write_ram16_fast(uint32_t address, uint32_t value);
+extern void m68k_write_ram8_fast(uint32_t address, uint32_t value);
+
 #if GNW_TARGET_MARIO != 0 | GNW_TARGET_ZELDA != 0
 
 	extern unsigned char *ROM_DATA;
@@ -165,8 +172,8 @@
 #endif
 
 #define FETCH8ROM(A) ((ROM_DATA[((A) ^ 1)]))
-#define FETCH16ROM(A) ((*(unsigned short *)&ROM_DATA[(A)]))
-#define FETCH32ROM(A) ( (*(unsigned int *)&ROM_DATA[(A)] << 16) | (*(unsigned int *)&ROM_DATA[(A)] >> 16) )
+#define FETCH16ROM(A) m68k_read_rom16_fast(A)
+#define FETCH32ROM(A) m68k_read_rom32_fast(A)
 
 #if GNW_TARGET_MARIO !=0 || GNW_TARGET_ZELDA!=0
 
@@ -181,11 +188,11 @@
 #else
 
 #define FETCH8RAM(A) ((M68K_RAM[(A ^ 1) & 0xFFFF]))
-#define FETCH16RAM(A) ((*(unsigned short *)&M68K_RAM[(A)&0XFFFF]))
+#define FETCH16RAM(A) m68k_read_ram16_fast(A)
 #define FETCH32RAM(A) ( (*(unsigned int *)&M68K_RAM[(A&0XFFFF)] << 16) | (*(unsigned int *)&M68K_RAM[(A&0XFFFF)] >> 16) )
 
-#define WRITE8RAM(A, V) (M68K_RAM[(A ^ 1) & 0xFFFF] = (V))
-#define WRITE16RAM(A, V) ((*(unsigned short *)&M68K_RAM[(A)&0XFFFF] = (V)))
+#define WRITE8RAM(A, V) m68k_write_ram8_fast(A, V)
+#define WRITE16RAM(A, V) m68k_write_ram16_fast(A, V)
 #define WRITE32RAM(A, V) ((*(unsigned int *)&M68K_RAM[(A)&0XFFFF] =( ((V) << 16) | ((V) >> 16) ) ))
 
 #endif

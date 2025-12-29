@@ -34,8 +34,7 @@ m68k_read_rom16_fast:
     ldr     r1, =ROM_DATA
     ldr     r1, [r1]                /* r1 = ROM_DATA pointer */
     ldrh    r0, [r1, r0]            /* Load 16-bit value */
-    /* Swap bytes for big-endian */
-    rev16   r0, r0
+    /* Already in correct byte order - ROM is stored big-endian on RP2350 */
     bx      lr
     
     .size m68k_read_rom16_fast, . - m68k_read_rom16_fast
@@ -53,9 +52,11 @@ m68k_read_rom32_fast:
     /* r0 = address */
     ldr     r1, =ROM_DATA
     ldr     r1, [r1]                /* r1 = ROM_DATA pointer */
-    ldr     r0, [r1, r0]            /* Load 32-bit value */
-    /* Swap bytes for big-endian (rev for 32-bit byte swap) */
-    rev     r0, r0
+    ldr     r2, [r1, r0]            /* Load 32-bit value */
+    /* Swap 16-bit halves: (value << 16) | (value >> 16) */
+    lsr     r0, r2, #16             /* r0 = high half */
+    lsl     r2, r2, #16             /* r2 = low half << 16 */
+    orr     r0, r2, r0              /* combine */
     bx      lr
     
     .size m68k_read_rom32_fast, . - m68k_read_rom32_fast
@@ -70,11 +71,11 @@ m68k_read_rom32_fast:
     .align 4
 
 m68k_read_ram16_fast:
-    /* r0 = address (already masked to RAM region) */
+    /* r0 = address (full 68K address) */
     ldr     r1, =M68K_RAM
-    sub     r0, r0, #0xFF0000       /* offset into RAM */
+    movw    r2, #0xFFFF             /* Mask for RAM offset */
+    and     r0, r0, r2              /* r0 = address & 0xFFFF */
     ldrh    r0, [r1, r0]            /* Load 16-bit value */
-    rev16   r0, r0                  /* Swap for big-endian */
     bx      lr
     
     .size m68k_read_ram16_fast, . - m68k_read_ram16_fast
@@ -91,8 +92,8 @@ m68k_read_ram16_fast:
 m68k_write_ram16_fast:
     /* r0 = address, r1 = value */
     ldr     r2, =M68K_RAM
-    sub     r0, r0, #0xFF0000       /* offset into RAM */
-    rev16   r1, r1                  /* Swap for big-endian */
+    movw    r3, #0xFFFF             /* Mask for RAM offset */
+    and     r0, r0, r3              /* r0 = address & 0xFFFF */
     strh    r1, [r2, r0]            /* Store 16-bit value */
     bx      lr
     
@@ -109,8 +110,11 @@ m68k_write_ram16_fast:
 
 m68k_write_ram8_fast:
     /* r0 = address, r1 = value */
+    /* 68K uses byte swapping: address ^ 1 */
     ldr     r2, =M68K_RAM
-    sub     r0, r0, #0xFF0000       /* offset into RAM */
+    movw    r3, #0xFFFF             /* Mask for RAM offset */
+    and     r0, r0, r3              /* r0 = address & 0xFFFF */
+    eor     r0, r0, #1              /* XOR with 1 for byte swap */
     strb    r1, [r2, r0]            /* Store 8-bit value */
     bx      lr
     
