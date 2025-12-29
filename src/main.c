@@ -380,9 +380,8 @@ static void __time_critical_func(emulation_loop)(void) {
             
             // Z80 runs on Core 1 with sound chips
             
-            // Render line (24 fps: render frames 0,3,5,8,10... - 2 out of every 5 frames)
-            uint32_t frame_mod = frame_counter % 5;
-            if ((frame_mod == 0 || frame_mod == 3) && scan_line < screen_height) {
+            // Render line (60 fps: render all frames)
+            if (scan_line < screen_height) {
                 PROFILE_START();
                 gwenesis_vdp_render_line(scan_line);
                 PROFILE_END(vdp_time);
