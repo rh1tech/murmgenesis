@@ -32,6 +32,17 @@ extern int vdp_68k_irq_ack(int int_level);
 const unsigned char *m68k_cycles_table = m68ki_cycles;
 void (**m68k_instruction_table)(void) = (void (**)(void))m68ki_instruction_jump_table;
 
+/* Helper function for assembly core - fetches next instruction word */
+uint16_t m68k_fetch_opcode(void) {
+    REG_IR = m68ki_read_imm_16();
+    return REG_IR;
+}
+
+/* Helper function for assembly core - check and process pending interrupts */
+void m68k_check_interrupts(void) {
+    m68ki_check_interrupts();
+}
+
 /* ======================================================================== */
 /* ================================= DATA ================================= */
 /* ======================================================================== */

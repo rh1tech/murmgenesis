@@ -17,6 +17,8 @@
     .extern m68k
     .extern m68k_instruction_table      /* pointer to jump table (exported from m68kcpu.c) */
     .extern m68k_cycles_table           /* pointer to cycles table (exported from m68kcpu.c) */
+    .extern m68k_fetch_opcode           /* C helper function for opcode fetch */
+    .extern m68k_check_interrupts       /* C helper function for interrupt check */
     .extern ROM_DATA
     .extern M68K_RAM
 
@@ -91,6 +93,9 @@ m68k_run_fast:
     str     r0, [r5, #M68K_CYCLE_END]
     mov     r6, r0                  @ r6 = target cycles
     
+    /* Check interrupts (critical for VBlank/HBlank handling) */
+    bl      m68k_check_interrupts
+    
     /* Check if stopped */
     ldr     r0, [r5, #M68K_STOPPED]
     cbnz    r0, .Lstopped
@@ -103,10 +108,6 @@ m68k_run_fast:
     ldr     r8, =m68k_cycles_table
     ldr     r8, [r8]                @ r8 = actual cycles table pointer
     
-    /* Cache ROM_DATA pointer */
-    ldr     r9, =ROM_DATA
-    ldr     r9, [r9]                @ r9 = ROM_DATA pointer
-    
 .Lmain_loop:
     /* Check cycles */
     ldr     r4, [r5, #M68K_CYCLES]
@@ -114,59 +115,21 @@ m68k_run_fast:
     bhs     .Lexit
     
     /*
-     * Inline instruction fetch
-     * Most instructions come from ROM (< 0x800000)
+     * Use C helper function for instruction fetch
+     * This handles all memory types and updates PC/IR properly
      */
-    ldr     r0, [r5, #M68K_PC]      @ r0 = PC
-    
-    /* Fast path: ROM access (PC < 0x800000) */
-    cmp     r0, #0x800000
-    bhs     .Lfetch_slow
-    
-    /* ROM fetch - fast path using cached r9 */
-    ldrh    r1, [r9, r0]            @ r1 = 16-bit opcode from ROM
-    add     r0, r0, #2              @ PC += 2
-    str     r0, [r5, #M68K_PC]      @ store updated PC
-    str     r1, [r5, #M68K_IR]      @ Store opcode to IR
+    bl      m68k_fetch_opcode       @ returns opcode in r0, also sets REG_IR
     
     /* Look up handler in jump table */
-    lsl     r0, r1, #2              @ r0 = opcode * 4 (table offset)
-    ldr     r2, [r7, r0]            @ r2 = handler function pointer
+    lsl     r1, r0, #2              @ r1 = opcode * 4 (table offset)
+    ldr     r2, [r7, r1]            @ r2 = handler function pointer
     
     /* Call instruction handler */
     blx     r2
     
     /* Add cycles for this instruction */
-    ldr     r0, [r5, #M68K_IR]      @ reload IR (handler may have changed it)
-    ldrb    r1, [r8, r0]            @ r1 = cycle count (unsigned char table, no shift needed)
-    ldr     r2, [r5, #M68K_CYCLES]
-    add     r2, r2, r1
-    str     r2, [r5, #M68K_CYCLES]
-    
-    /* Loop back */
-    b       .Lmain_loop
-    
-.Lfetch_slow:
-    /* Slow path: RAM access (PC >= 0xFF0000) or other memory */
-    /* Fall back to reading from M68K_RAM */
-    ldr     r1, =M68K_RAM
-    movw    r2, #0xFFFF
-    and     r3, r0, r2              @ r3 = PC & 0xFFFF
-    ldrh    r1, [r1, r3]            @ r1 = 16-bit opcode from RAM
-    add     r0, r0, #2              @ PC += 2
-    str     r0, [r5, #M68K_PC]      @ store updated PC
-    str     r1, [r5, #M68K_IR]      @ Store opcode to IR
-    
-    /* Look up handler in jump table */
-    lsl     r0, r1, #2              @ r0 = opcode * 4 (table offset)
-    ldr     r2, [r7, r0]            @ r2 = handler function pointer
-    
-    /* Call instruction handler */
-    blx     r2
-    
-    /* Add cycles for this instruction */
-    ldr     r0, [r5, #M68K_IR]      @ reload IR
-    ldrb    r1, [r8, r0]            @ r1 = cycle count (unsigned char table)
+    ldr     r0, [r5, #M68K_IR]      @ load IR
+    ldrb    r1, [r8, r0]            @ r1 = cycle count
     ldr     r2, [r5, #M68K_CYCLES]
     add     r2, r2, r1
     str     r2, [r5, #M68K_CYCLES]

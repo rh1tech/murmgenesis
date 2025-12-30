@@ -50,7 +50,7 @@
 #define DISABLE_FRAME_LIMITING 0
 
 // Use assembly-optimized M68K loop (set to 0 to use original C loop for debugging)
-#define USE_M68K_FAST_LOOP 0
+#define USE_M68K_FAST_LOOP 1
 
 #if USE_M68K_FAST_LOOP
 // Assembly-optimized M68K execution loop
