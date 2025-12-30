@@ -169,6 +169,17 @@ m68k_run_fast:
     sub     r1, r10, r0             @ r1 = opcode - 0x51C8
     cmp     r1, #8                  @ Check if in range 0-7 (D0-D7)
     blo     .Lhandle_dbf            @ Unsigned less than = in range
+    
+    /* Check for BNE.B (0x6601-0x66FE) - ~1% of instructions */
+    lsr     r0, r10, #8             @ Get high byte
+    cmp     r0, #0x66               @ Is it BNE?
+    bne     .Lno_inline             @ No, use table
+    and     r0, r10, #0xFF          @ Get displacement
+    cmp     r0, #0                  @ 0x6600 = BNE.W (needs extension word)
+    beq     .Lno_inline
+    cmp     r0, #0xFF               @ 0x66FF = BNE.L (needs extension)
+    beq     .Lno_inline
+    b       .Lhandle_bne_b          @ Handle BNE.B inline
 
 .Lno_inline:
     /* Look up handler in jump table (r10 = opcode) */
