@@ -457,12 +457,10 @@ static void __time_critical_func(emulation_loop)(void) {
         extern volatile int zclk;
         zclk = 0;
         
-        // Run Z80 in larger chunks to reduce overhead (every 32 scanlines instead of every line)
-        int z80_lines_per_chunk = 32;
-        
         // ==================================================================
         // PHASE 1: Run all emulation first (M68K + Z80 + interrupts)
         // This ensures sound chip state is updated at consistent timing
+        // Z80 runs every scanline for proper DAC sample timing
         // ==================================================================
         while (scan_line < lines_per_frame) {
             // Run M68K for one line
@@ -474,11 +472,8 @@ static void __time_critical_func(emulation_loop)(void) {
 #endif
             PROFILE_END(m68k_time);
             
-            // Run Z80 every N scanlines to reduce function call overhead
-            if ((scan_line % z80_lines_per_chunk) == (z80_lines_per_chunk - 1) || scan_line == lines_per_frame - 1) {
-                int line_clock = (scan_line + 1) * VDP_CYCLES_PER_LINE;
-                z80_run(line_clock);
-            }
+            // Run Z80 every scanline for proper DAC sample playback timing
+            z80_run(system_clock + VDP_CYCLES_PER_LINE);
             
             // Handle line counter interrupt
             if (scan_line == 0 || scan_line > screen_height) {
