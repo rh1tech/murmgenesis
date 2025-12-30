@@ -28,6 +28,152 @@ extern int vdp_68k_irq_ack(int int_level);
 /* Disabled: 256KB jump table doesn't fit in RAM */
 #define USE_ASM_INSTRUCTION_HANDLERS 0
 
+/* Enable opcode profiling to identify hot instructions */
+#define M68K_OPCODE_PROFILING 1
+
+/* ======================================================================== */
+/* ====================== OPCODE PROFILING ================================ */
+/* ======================================================================== */
+
+#if M68K_OPCODE_PROFILING
+
+/* Track top N most frequent opcodes (compressed - only stores unique opcodes) */
+#define PROFILE_TOP_N 32
+
+typedef struct {
+    uint16_t opcode;
+    uint32_t count;
+} opcode_profile_entry_t;
+
+static opcode_profile_entry_t opcode_profile[PROFILE_TOP_N];
+static uint32_t profile_total_count = 0;
+static uint32_t profile_report_threshold = 10000000; /* Report every 10M instructions */
+
+/* Fast inline profiler - just increment if already tracked */
+void m68k_profile_opcode(uint16_t opcode) {
+    profile_total_count++;
+    
+    /* Check if this opcode is already in our top list */
+    for (int i = 0; i < PROFILE_TOP_N; i++) {
+        if (opcode_profile[i].opcode == opcode) {
+            opcode_profile[i].count++;
+            /* Bubble up if count exceeds previous entry */
+            while (i > 0 && opcode_profile[i].count > opcode_profile[i-1].count) {
+                opcode_profile_entry_t tmp = opcode_profile[i];
+                opcode_profile[i] = opcode_profile[i-1];
+                opcode_profile[i-1] = tmp;
+                i--;
+            }
+            return;
+        }
+    }
+    
+    /* New opcode - add to list if we have space or it would make top N */
+    for (int i = 0; i < PROFILE_TOP_N; i++) {
+        if (opcode_profile[i].count == 0) {
+            opcode_profile[i].opcode = opcode;
+            opcode_profile[i].count = 1;
+            return;
+        }
+    }
+    
+    /* Replace lowest entry if this opcode might be hot */
+    if (opcode_profile[PROFILE_TOP_N-1].count < 100) {
+        opcode_profile[PROFILE_TOP_N-1].opcode = opcode;
+        opcode_profile[PROFILE_TOP_N-1].count = 1;
+    }
+}
+
+/* Print profile report */
+void m68k_print_opcode_profile(void) {
+    printf("\n=== M68K Opcode Profile (Top %d, total=%lu) ===\n", PROFILE_TOP_N, profile_total_count);
+    for (int i = 0; i < PROFILE_TOP_N && opcode_profile[i].count > 0; i++) {
+        uint16_t op = opcode_profile[i].opcode;
+        uint32_t count = opcode_profile[i].count;
+        float pct = (100.0f * count) / profile_total_count;
+        
+        /* Decode opcode type */
+        const char* name = "???";
+        if ((op & 0xF000) == 0x6000) {
+            uint8_t cond = (op >> 8) & 0xF;
+            uint8_t disp = op & 0xFF;
+            const char* conds[] = {"BRA","BSR","BHI","BLS","BCC","BCS","BNE","BEQ",
+                                   "BVC","BVS","BPL","BMI","BGE","BLT","BGT","BLE"};
+            name = conds[cond];
+            if (disp == 0) printf("%2d: %04X %-8s.W  %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+            else if (disp == 0xFF) printf("%2d: %04X %-8s.L  %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+            else printf("%2d: %04X %-8s.B  %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xC000) == 0x0000 && (op & 0xF000) != 0x0000) {
+            if ((op & 0xF100) == 0x7000) name = "MOVEQ";
+            else name = "imm-op";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xC000) == 0x4000) {
+            if ((op & 0xFF00) == 0x4E00) {
+                if (op == 0x4E71) name = "NOP";
+                else if (op == 0x4E75) name = "RTS";
+                else if ((op & 0xFFF0) == 0x4E60) name = "MOVE USP";
+                else if ((op & 0xFFF8) == 0x4E50) name = "LINK";
+                else if ((op & 0xFFF8) == 0x4E58) name = "UNLK";
+                else name = "misc";
+            } else if ((op & 0xFFC0) == 0x4EC0) name = "JMP";
+            else if ((op & 0xFFC0) == 0x4E80) name = "JSR";
+            else if ((op & 0xFF00) == 0x4200) name = "CLR.B";
+            else if ((op & 0xFF00) == 0x4240) name = "CLR.W";
+            else if ((op & 0xFF00) == 0x4280) name = "CLR.L";
+            else if ((op & 0xF1C0) == 0x41C0) name = "LEA";
+            else name = "misc";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF000) == 0x2000) {
+            name = "MOVE.L";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF000) == 0x3000) {
+            name = "MOVE.W";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF000) == 0x1000) {
+            name = "MOVE.B";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF100) == 0x5000) {
+            name = "ADDQ";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF100) == 0x5100) {
+            name = "SUBQ";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF000) == 0xD000) {
+            name = "ADD";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF000) == 0x9000) {
+            name = "SUB";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF000) == 0xB000) {
+            name = "CMP/EOR";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF000) == 0xC000) {
+            name = "AND/MUL";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF000) == 0x8000) {
+            name = "OR/DIV";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else if ((op & 0xF000) == 0xE000) {
+            name = "SHIFT";
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        } else {
+            printf("%2d: %04X %-12s %8lu (%5.2f%%)\n", i+1, op, name, count, pct);
+        }
+    }
+    printf("================================================\n\n");
+}
+
+/* Check if we should print profile (called periodically) */
+void m68k_check_profile_report(void) {
+    static uint32_t last_report = 0;
+    if (profile_total_count - last_report >= profile_report_threshold) {
+        m68k_print_opcode_profile();
+        last_report = profile_total_count;
+    }
+}
+
+#endif /* M68K_OPCODE_PROFILING */
+
 /* ======================================================================== */
 /* ====================== EXPORTS FOR ASSEMBLY CORE ====================== */
 /* ======================================================================== */
@@ -39,6 +185,9 @@ void (**m68k_instruction_table)(void) = (void (**)(void))m68ki_instruction_jump_
 /* Helper function for assembly core - fetches next instruction word */
 uint16_t m68k_fetch_opcode(void) {
     REG_IR = m68ki_read_imm_16();
+#if M68K_OPCODE_PROFILING
+    m68k_profile_opcode(REG_IR);
+#endif
     return REG_IR;
 }
 

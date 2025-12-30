@@ -480,6 +480,12 @@ extern void m68k_set_reg(m68k_register_t reg, unsigned int value);
 extern void gwenesis_m68k_save_state();
 extern void gwenesis_m68k_load_state();
 
+/* Opcode profiling - to identify hot instructions for optimization */
+#ifdef M68K_OPCODE_PROFILING
+extern void m68k_print_opcode_profile(void);
+extern void m68k_check_profile_report(void);
+#endif
+
 /* ======================================================================== */
 /* ============================== END OF FILE ============================= */
 /* ======================================================================== */

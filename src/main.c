@@ -23,7 +23,11 @@
 #include "bus/gwenesis_bus.h"
 #include "io/gwenesis_io.h"
 #include "vdp/gwenesis_vdp.h"
+
+// Enable M68K opcode profiling (must be defined before m68k.h)
+#define M68K_OPCODE_PROFILING 1
 #include "cpus/M68K/m68k.h"
+
 #include "sound/z80inst.h"
 #include "sound/ym2612.h"
 #include "sound/gwenesis_sn76489.h"
@@ -522,6 +526,10 @@ static void __time_critical_func(emulation_loop)(void) {
         
         frame_counter++;
         m68k.cycles -= system_clock;
+
+#if M68K_OPCODE_PROFILING
+        m68k_check_profile_report();
+#endif
 
         if (render_this_frame) {
             consecutive_skipped_frames = 0;

@@ -19,6 +19,7 @@
     .extern m68k_cycles_table           /* pointer to cycles table (exported from m68kcpu.c) */
     .extern m68k_fetch_opcode           /* C helper function for opcode fetch */
     .extern m68k_check_interrupts       /* C helper function for interrupt check */
+    .extern m68k_profile_opcode         /* C helper function for opcode profiling */
     .extern ROM_DATA
     .extern M68K_RAM
 
@@ -87,7 +88,9 @@ m68k_run_fast:
     /* Check if already past target */
     ldr     r1, [r5, #M68K_CYCLES]
     cmp     r1, r0
-    bhs     .Lexit                  @ Already done
+    blo     .Lnot_done              @ Continue if we haven't reached target
+    pop     {r4-r11, pc}            @ Early exit - already done
+.Lnot_done:
     
     /* Store end cycles */
     str     r0, [r5, #M68K_CYCLE_END]
@@ -98,7 +101,12 @@ m68k_run_fast:
     
     /* Check if stopped */
     ldr     r0, [r5, #M68K_STOPPED]
-    cbnz    r0, .Lstopped
+    cmp     r0, #0
+    beq     .Lnot_stopped
+    /* CPU is stopped, advance to target cycles and exit */
+    str     r6, [r5, #M68K_CYCLES]
+    pop     {r4-r11, pc}
+.Lnot_stopped:
     
     /* Load jump table pointer (dereference the exported pointer) */
     ldr     r7, =m68k_instruction_table
@@ -142,11 +150,21 @@ m68k_run_fast:
 .Lslow_fetch:
     /* Fall back to C helper for RAM/IO access */
     str     r4, [r5, #M68K_CYCLES]  @ Save cycles before call (may be modified)
-    bl      m68k_fetch_opcode       @ returns opcode in r0, also sets REG_IR
+    bl      m68k_fetch_opcode       @ returns opcode in r0, also sets REG_IR, and profiles
     mov     r10, r0                 @ r10 = opcode
     ldr     r4, [r5, #M68K_CYCLES]  @ Reload cycles (may have changed)
     
 .Lfetch_done:
+    /* ================================================================
+     * INLINE DISPATCH FOR HOT OPCODES
+     * ================================================================ */
+    
+    /* Check for NOP (0x4E71) - 6% of instructions */
+    movw    r0, #0x4E71
+    cmp     r10, r0
+    beq     .Lhandle_nop
+
+.Lno_inline:
     /* Look up handler in jump table (r10 = opcode) */
     lsl     r1, r10, #2             @ r1 = opcode * 4 (table offset)
     ldr     r2, [r7, r1]            @ r2 = handler function pointer
@@ -168,17 +186,125 @@ m68k_run_fast:
     b       .Lmain_loop
 
 .Lexit_store:
-    /* Store final cycles value */
+    /* Store final cycles value and exit */
     str     r4, [r5, #M68K_CYCLES]
-    b       .Lexit
-    
-.Lstopped:
-    /* CPU is stopped, advance to target cycles */
-    str     r6, [r5, #M68K_CYCLES]
-    
-.Lexit:
     pop     {r4-r11, pc}            @ Restore and return
+
+/* ======================================================================
+ * INLINE INSTRUCTION HANDLERS
+ * These handle the hottest opcodes without function call overhead
+ * ====================================================================== */
+
+/*
+ * NOP handler (opcode 0x4E71)
+ * Simply add cycles and continue - 6% of all instructions
+ */
+.Lhandle_nop:
+    add     r4, r4, #4              @ NOP takes 4 cycles
+    b       .Lmain_loop
+
+/*
+ * DBF Dn,label handler (opcodes 0x51C8-0x51CF)
+ * Decrement Dn.W, branch if Dn.W != -1
+ * This is ~9% of all instructions (loop counters)
+ * 
+ * Entry: r10 = opcode (0x51C8-0x51CF)
+ * PC points to the 16-bit displacement word
+ * 
+ * Cycle timing:
+ *   Base: 10 cycles (from table)
+ *   Not expired (branch taken): -2 cycles adjustment
+ *   Expired (fall through): +2 cycles adjustment
+ */
+.Lhandle_dbf:
+    and     r1, r10, #7             @ r1 = register number (0-7)
+    lsl     r1, r1, #2              @ r1 = register offset (0, 4, 8, ...)
+    add     r2, r5, #M68K_DAR       @ r2 = base of D/A registers
+    ldr     r3, [r2, r1]            @ r3 = current Dn value (full 32-bit)
     
+    /* Decrement lower 16 bits only, preserve upper 16 bits */
+    uxth    r0, r3                  @ r0 = Dn.W (lower 16 bits, zero-extended)
+    sub     r0, r0, #1              @ r0 = Dn.W - 1
+    bfi     r3, r0, #0, #16         @ Insert lower 16 bits back into r3
+    str     r3, [r2, r1]            @ Store updated Dn
+    
+    /* Check if result is -1 (0xFFFF in lower 16 bits) */
+    uxth    r0, r0                  @ Mask to 16 bits
+    movw    r1, #0xFFFF
+    cmp     r0, r1
+    beq     .Ldbf_expired           @ Counter expired, don't branch
+    
+    /* Counter not expired - fetch displacement and branch */
+    /* PC currently points to displacement word */
+    ldr     r0, [r5, #M68K_PC]      @ r0 = PC (points to displacement)
+    
+    /* Check if PC is in ROM for fast fetch */
+    movw    r1, #0
+    movt    r1, #0x80               @ r1 = 0x800000
+    cmp     r0, r1
+    bhs     .Ldbf_use_table         @ Use C handler for non-ROM
+    
+    /* Fast ROM fetch for displacement */
+    ldr     r1, [r9]                @ r1 = ROM_DATA pointer
+    ldrh    r2, [r1, r0]            @ r2 = displacement word (byte-swapped in ROM)
+    /* ROM is byte-swapped (big-endian M68K), so we need rev16 */
+    rev16   r2, r2                  @ Byte swap to get correct value
+    sxth    r2, r2                  @ Sign extend to 32-bit
+    
+    /* New PC = (PC pointing at disp) + displacement */
+    add     r0, r0, r2              @ r0 = PC + displacement
+    str     r0, [r5, #M68K_PC]      @ Store new PC
+    
+    /* DBF branch taken: base 10 + adjustment -2 = 8 cycles */
+    add     r4, r4, #8
+    b       .Lmain_loop
+    
+.Ldbf_use_table:
+    /* Fall back to C handler - restore state and use jump table */
+    /* Need to undo the decrement we did */
+    and     r1, r10, #7             @ r1 = register number
+    lsl     r1, r1, #2
+    add     r2, r5, #M68K_DAR
+    ldr     r3, [r2, r1]
+    uxth    r0, r3
+    add     r0, r0, #1              @ Undo the decrement
+    bfi     r3, r0, #0, #16
+    str     r3, [r2, r1]
+    b       .Lno_inline             @ Now use the table handler
+    
+.Ldbf_expired:
+    /* Counter reached -1 (0xFFFF), skip displacement word */
+    ldr     r0, [r5, #M68K_PC]
+    add     r0, r0, #2              @ Skip displacement word
+    str     r0, [r5, #M68K_PC]
+    /* DBF expired: base 10 + adjustment +2 = 12 cycles */
+    add     r4, r4, #12
+    b       .Lmain_loop
+
+/*
+ * BNE.B handler (opcodes 0x6601-0x66FE, 8-bit displacement)
+ * Branch if Z flag is clear (NOT_Z_FLAG != 0)
+ * 
+ * r10 = opcode (0x66XX where XX is signed displacement)
+ */
+.Lhandle_bne_b:
+    /* Check Z flag (NOT_Z_FLAG: 0 = Z set, non-zero = Z clear) */
+    ldr     r0, [r5, #M68K_NOT_Z_FLAG]
+    cmp     r0, #0
+    beq     .Lbne_not_taken         @ Z is set, don't branch
+    
+    /* Z is clear - take the branch */
+    sxtb    r0, r10                 @ Sign-extend 8-bit displacement
+    ldr     r1, [r5, #M68K_PC]
+    add     r1, r1, r0              @ PC += displacement
+    str     r1, [r5, #M68K_PC]
+    add     r4, r4, #10             @ Branch taken = 10 cycles
+    b       .Lmain_loop
+    
+.Lbne_not_taken:
+    add     r4, r4, #8              @ Branch not taken = 8 cycles
+    b       .Lmain_loop
+
     .size m68k_run_fast, . - m68k_run_fast
 
     .end
