@@ -24,6 +24,10 @@ extern int vdp_68k_irq_ack(int int_level);
 #include "m68kops.h"
 #include "gwenesis_savestate.h"
 
+/* Enable assembly-optimized instruction handlers */
+/* Disabled: 256KB jump table doesn't fit in RAM */
+#define USE_ASM_INSTRUCTION_HANDLERS 0
+
 /* ======================================================================== */
 /* ====================== EXPORTS FOR ASSEMBLY CORE ====================== */
 /* ======================================================================== */
@@ -42,6 +46,81 @@ uint16_t m68k_fetch_opcode(void) {
 void m68k_check_interrupts(void) {
     m68ki_check_interrupts();
 }
+
+/* ======================================================================== */
+/* ================= ASSEMBLY OPTIMIZED INSTRUCTION HANDLERS ============== */
+/* ======================================================================== */
+
+#if USE_ASM_INSTRUCTION_HANDLERS
+
+/* External assembly handlers */
+extern void m68k_op_bne_8_asm(void);
+extern void m68k_op_beq_8_asm(void);
+extern void m68k_op_bpl_8_asm(void);
+extern void m68k_op_bmi_8_asm(void);
+extern void m68k_op_bcc_8_asm(void);
+extern void m68k_op_bcs_8_asm(void);
+extern void m68k_op_bra_8_asm(void);
+extern void m68k_op_nop_asm(void);
+
+/*
+ * Small lookup table for assembly handlers
+ * Maps condition code (from opcode bits 8-11) to assembly handler
+ * For Bcc instructions: opcode 0110 cccc dddd dddd
+ * cc = 0000 = BRA, 0001 = BSR, 0010 = BHI, 0011 = BLS
+ *      0100 = BCC, 0101 = BCS, 0110 = BNE, 0111 = BEQ
+ *      1010 = BPL, 1011 = BMI, etc.
+ */
+static void (*asm_branch_handlers[16])(void) = {
+    m68k_op_bra_8_asm,  /* 0: BRA */
+    NULL,               /* 1: BSR - not optimized yet */
+    NULL,               /* 2: BHI */
+    NULL,               /* 3: BLS */
+    m68k_op_bcc_8_asm,  /* 4: BCC */
+    m68k_op_bcs_8_asm,  /* 5: BCS */
+    m68k_op_bne_8_asm,  /* 6: BNE */
+    m68k_op_beq_8_asm,  /* 7: BEQ */
+    NULL,               /* 8: BVC */
+    NULL,               /* 9: BVS */
+    m68k_op_bpl_8_asm,  /* A: BPL */
+    m68k_op_bmi_8_asm,  /* B: BMI */
+    NULL,               /* C: BGE */
+    NULL,               /* D: BLT */
+    NULL,               /* E: BGT */
+    NULL,               /* F: BLE */
+};
+
+/*
+ * Try to dispatch to assembly handler for current instruction
+ * Returns 1 if handled by assembly, 0 if not
+ */
+int m68k_try_asm_handler(void) {
+    uint16_t opcode = REG_IR;
+    
+    /* Check for Bcc.B instructions: 0110 cccc dddd dddd where d != 00 */
+    if ((opcode & 0xF000) == 0x6000) {
+        uint8_t displacement = opcode & 0xFF;
+        if (displacement != 0x00 && displacement != 0xFF) {
+            /* 8-bit displacement branch */
+            uint8_t condition = (opcode >> 8) & 0x0F;
+            void (*handler)(void) = asm_branch_handlers[condition];
+            if (handler) {
+                handler();
+                return 1;
+            }
+        }
+    }
+    
+    /* Check for NOP: 0x4E71 */
+    if (opcode == 0x4E71) {
+        m68k_op_nop_asm();
+        return 1;
+    }
+    
+    return 0;
+}
+
+#endif /* USE_ASM_INSTRUCTION_HANDLERS */
 
 /* ======================================================================== */
 /* ================================= DATA ================================= */
