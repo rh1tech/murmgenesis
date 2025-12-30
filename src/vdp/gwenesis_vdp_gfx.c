@@ -516,12 +516,12 @@ void draw_line_b(int line) {
     uint8_t* scr = &render_buffer[PIX_OVERFLOW];
 
     const unsigned int ntaddr = REG4_NAMETABLE_B;
+    
     uint16_t scrollx = FETCH16VRAM(get_hscroll_vram(line) + 2) & 0x3FF;
     const uint16_t* vsram = &VSRAM[1];
     const uint8_t* end = scr + screen_width;
 
-    //bool column_scrolling = BIT(gwenesis_vdp_regs[11], 2);
-    const bool column_scrolling = gwenesis_vdp_regs[11] & 0x4;
+    bool column_scrolling = BIT(gwenesis_vdp_regs[11], 2);
 
     // Invert horizontal scrolling (because it goes right, but we need to offset
     // of the first screen pixel)
@@ -537,7 +537,6 @@ void draw_line_b(int line) {
         uint8_t row = (scrolly >> 3) & nth_mask;
         uint8_t paty = scrolly & 7;
 
-        // unsigned int nt = ntaddr + row * (2 * ntwidth);
         unsigned int nt = ntaddr + row * ntwidth_x2;
 
         draw_pattern_planeB(scr, FETCH16VRAM(nt + __fast_mul(col , 2)), paty);
@@ -930,7 +929,8 @@ void gwenesis_vdp_render_line(int line) {
     vdpg_log(__FUNCTION__, ": %3d", line);
 
     //unsigned int line = scan_line;
-    // if (line == 0) gwenesis_vdp_render_config();
+    // Recalculate plane sizes every frame in case registers changed
+    if (line == 0) gwenesis_vdp_render_config();
 
     // interlace mode not implemented
     if (BITS(gwenesis_vdp_regs[12], 1, 2) != 0)
