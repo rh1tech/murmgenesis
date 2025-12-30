@@ -45,7 +45,7 @@
 // Simple logging
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 
-#define ENABLE_PROFILING 0
+#define ENABLE_PROFILING 1
 #define DISABLE_FRAME_LIMITING 0
 
 // Emulation speed control (in percentage: 100 = normal, 50 = half speed, 150 = 1.5x speed)
@@ -412,28 +412,8 @@ static void __time_critical_func(emulation_loop)(void) {
             const uint64_t expected_start = first_frame_time + ((uint64_t)frame_num * frame_period_us);
             const int64_t lateness_us = (int64_t)now - (int64_t)expected_start;
 
-            // Adaptive frame-skip policy:
-            // - If only slightly behind (< 1 frame), still render regularly (every other frame)
-            //   to avoid long visual freezes.
-            // - If behind by >= 1 frame, skip more aggressively, but cap consecutive skips
-            //   so the display still updates periodically.
-            if (lateness_us > 0) {
-                if (lateness_us < (int64_t)frame_period_us) {
-                    // Mild lateness: drop every other render frame.
-                    render_this_frame = ((frame_num & 1u) == 0u);
-                } else {
-                    // Significant lateness: default to skipping rendering.
-                    render_this_frame = false;
-                }
-
-                // Never skip too many frames in a row; this prevents the picture
-                // from appearing to "freeze" under sustained load.
-                if (!render_this_frame) {
-                    if (consecutive_skipped_frames >= 2u) {
-                        render_this_frame = true;
-                    }
-                }
-            }
+            // Fixed frame-skip: render every 2nd frame (30 fps)
+            render_this_frame = ((frame_num & 1u) == 0u);
 
             // If we're way behind, resync to avoid a catch-up spiral.
             if (lateness_us > (int64_t)(frame_period_us * 2)) {
@@ -457,6 +437,10 @@ static void __time_critical_func(emulation_loop)(void) {
         // Run Z80 in larger chunks to reduce overhead (every 32 scanlines instead of every line)
         int z80_lines_per_chunk = 32;
         
+        // ==================================================================
+        // PHASE 1: Run all emulation first (M68K + Z80 + interrupts)
+        // This ensures sound chip state is updated at consistent timing
+        // ==================================================================
         while (scan_line < lines_per_frame) {
             // Run M68K for one line
             PROFILE_START();
@@ -467,13 +451,6 @@ static void __time_critical_func(emulation_loop)(void) {
             if ((scan_line % z80_lines_per_chunk) == (z80_lines_per_chunk - 1) || scan_line == lines_per_frame - 1) {
                 int line_clock = (scan_line + 1) * VDP_CYCLES_PER_LINE;
                 z80_run(line_clock);
-            }
-            
-            // Render line (adaptive frame-skip keeps audio/game speed stable)
-            if (render_this_frame && scan_line < screen_height) {
-                PROFILE_START();
-                gwenesis_vdp_render_line(scan_line);
-                PROFILE_END(vdp_time);
             }
             
             // Handle line counter interrupt
@@ -505,9 +482,19 @@ static void __time_critical_func(emulation_loop)(void) {
                 z80_irq_line(0);
             }
             
-            // Sound chips run on Core 1 - no sound processing here
-            
             system_clock += VDP_CYCLES_PER_LINE;
+        }
+        
+        // ==================================================================
+        // PHASE 2: Render the frame AFTER emulation is complete
+        // This decouples rendering from emulation timing for stable audio
+        // ==================================================================
+        if (render_this_frame) {
+            PROFILE_START();
+            for (int line = 0; line < screen_height; line++) {
+                gwenesis_vdp_render_line(line);
+            }
+            PROFILE_END(vdp_time);
         }
         
         frame_counter++;
