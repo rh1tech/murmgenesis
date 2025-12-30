@@ -208,12 +208,12 @@ void ym_log(const char *subs, const char *fmt, ...) {
 *   TL_RES_LEN - sinus resolution (X axis)
 */
 #define TL_TAB_LEN (13*2*TL_RES_LEN)
-static signed int tl_tab[TL_TAB_LEN];
+signed int tl_tab[TL_TAB_LEN];  /* non-static for assembly access */
 
 #define ENV_QUIET    (TL_TAB_LEN>>3)
 
 /* sin waveform table in 'decibel' scale */
-static unsigned int sin_tab[SIN_LEN] ;
+unsigned int sin_tab[SIN_LEN];  /* non-static for assembly access */
 
 /* sustain level table (3dB per step) */
 /* bit0, bit1, bit2, bit3, bit4, bit5, bit6 */
@@ -1467,23 +1467,9 @@ INLINE void refresh_fc_eg_chan(FM_CH *CH )
 
 #define volume_calc(OP) ((OP)->vol_out + (AM & (OP)->AMmask))
 
-INLINE signed int op_calc(UINT32 phase, unsigned int env, unsigned int pm)
-{
-  UINT32 p = (env<<3) + sin_tab[ ( (phase >> SIN_BITS) + (pm >> 1) ) & SIN_MASK ];
-
-  if (p >= TL_TAB_LEN)
-    return 0;
-  return tl_tab[p];
-}
-
-INLINE signed int op_calc1(UINT32 phase, unsigned int env, unsigned int pm)
-{
-  UINT32 p = (env<<3) + sin_tab[ ( (phase + pm ) >> SIN_BITS ) & SIN_MASK ];
-
-  if (p >= TL_TAB_LEN)
-    return 0;
-  return tl_tab[p];
-}
+/* Assembly-optimized op_calc functions in ym2612_opt.S */
+extern signed int op_calc(UINT32 phase, unsigned int env, unsigned int pm);
+extern signed int op_calc1(UINT32 phase, unsigned int env, unsigned int pm);
 
 INLINE void chan_calc(FM_CH *CH, int num)
 {
