@@ -128,15 +128,15 @@
 /*    YM2610B : PSG:3ch FM:6ch ADPCM(18.5KHz):6ch DeltaT ADPCM:1ch      */
 /************************************************************************/
 
-#if GNW_TARGET_MARIO !=0 || GNW_TARGET_ZELDA!=0
-  #pragma GCC optimize("Ofast")
-#endif
+#pragma GCC optimize("Ofast")
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include "pico/time.h"
+#include "pico/platform.h"
 
 #include "ym2612.h"
 #include "gwenesis_bus.h"
@@ -2152,7 +2152,7 @@ static inline void YM2612Update(int16_t *buffer, int length)
   INTERNAL_TIMER_B(length);
 }
 
-void ym2612_run( int target) {
+void ym2612_run(int target) {
 
   if ( ym2612_clock >= target) {
     return;
