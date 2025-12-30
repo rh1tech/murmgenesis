@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "board_config.h"
 #include "HDMI.h"
@@ -47,6 +48,14 @@
 
 #define ENABLE_PROFILING 1
 #define DISABLE_FRAME_LIMITING 0
+
+// Use assembly-optimized M68K loop (set to 0 to use original C loop for debugging)
+#define USE_M68K_FAST_LOOP 1
+
+#if USE_M68K_FAST_LOOP
+// Assembly-optimized M68K execution loop
+extern void m68k_run_fast(unsigned int cycles);
+#endif
 
 // Emulation speed control (in percentage: 100 = normal, 50 = half speed, 150 = 1.5x speed)
 #define EMULATION_SPEED_PERCENT 100
@@ -254,6 +263,16 @@ static bool load_rom(const char *filename) {
 
 // Initialize Genesis emulator
 static void genesis_init(void) {
+    // Print M68K struct offsets for assembly optimization
+    printf("M68K struct offsets:\n");
+    printf("  cycles:      %zu\n", offsetof(m68ki_cpu_core, cycles));
+    printf("  cycle_end:   %zu\n", offsetof(m68ki_cpu_core, cycle_end));
+    printf("  dar:         %zu\n", offsetof(m68ki_cpu_core, dar));
+    printf("  pc:          %zu\n", offsetof(m68ki_cpu_core, pc));
+    printf("  ir:          %zu\n", offsetof(m68ki_cpu_core, ir));
+    printf("  stopped:     %zu\n", offsetof(m68ki_cpu_core, stopped));
+    printf("  sizeof:      %zu\n", sizeof(m68ki_cpu_core));
+    
     // Clear RAM
     memset(M68K_RAM, 0, MAX_RAM_SIZE);
     memset(ZRAM, 0, MAX_Z80_RAM_SIZE);
@@ -444,7 +463,11 @@ static void __time_critical_func(emulation_loop)(void) {
         while (scan_line < lines_per_frame) {
             // Run M68K for one line
             PROFILE_START();
+#if USE_M68K_FAST_LOOP
+            m68k_run_fast(system_clock + VDP_CYCLES_PER_LINE);
+#else
             m68k_run(system_clock + VDP_CYCLES_PER_LINE);
+#endif
             PROFILE_END(m68k_time);
             
             // Run Z80 every N scanlines to reduce function call overhead

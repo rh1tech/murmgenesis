@@ -93,6 +93,7 @@ set(GWENESIS_SOURCES
     # CPUs
     src/cpus/M68K/m68kcpu.c
     src/cpus/M68K/m68k_memory_opt.S
+    src/cpus/M68K/m68k_core_opt.S
     src/cpus/Z80/Z80.c
     # IO
     src/io/gwenesis_io.c

@@ -25,6 +25,14 @@ extern int vdp_68k_irq_ack(int int_level);
 #include "gwenesis_savestate.h"
 
 /* ======================================================================== */
+/* ====================== EXPORTS FOR ASSEMBLY CORE ====================== */
+/* ======================================================================== */
+
+/* Export pointers to static tables for assembly-optimized core */
+const unsigned char *m68k_cycles_table = m68ki_cycles;
+void (**m68k_instruction_table)(void) = (void (**)(void))m68ki_instruction_jump_table;
+
+/* ======================================================================== */
 /* ================================= DATA ================================= */
 /* ======================================================================== */
 
