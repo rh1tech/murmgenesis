@@ -368,6 +368,11 @@ static void __time_critical_func(emulation_loop)(void) {
     gwenesis_vdp_set_buffer((uint8_t *)SCREEN);
     gwenesis_vdp_render_config();
     
+    // Frame timing state (used for both pacing and adaptive frame-skip)
+    uint64_t first_frame_time = 0;
+    uint32_t frame_num = 0;
+    uint32_t consecutive_skipped_frames = 0;
+
     while (1) {
         int hint_counter = gwenesis_vdp_regs[10];
         
@@ -385,6 +390,61 @@ static void __time_critical_func(emulation_loop)(void) {
             last_screen_height = screen_height;
         }
         
+        // ------------------------------------------------------------------
+        // Timing + adaptive frame-skip
+        //
+        // Goal: keep emulation (and therefore audio/game speed) on a fixed
+        // wall-clock cadence. If rendering makes us fall behind, skip rendering
+        // for that frame instead of slowing emulation.
+        // ------------------------------------------------------------------
+        bool render_this_frame = true;
+
+#if !DISABLE_FRAME_LIMITING
+        {
+            const uint64_t now = time_us_64();
+            const uint64_t base_period_us = is_pal ? 20000u : 16666u; // 50Hz vs 60Hz
+            const uint64_t frame_period_us = (base_period_us * 100u) / EMULATION_SPEED_PERCENT;
+
+            if (frame_num == 0) {
+                first_frame_time = now;
+            }
+
+            const uint64_t expected_start = first_frame_time + ((uint64_t)frame_num * frame_period_us);
+            const int64_t lateness_us = (int64_t)now - (int64_t)expected_start;
+
+            // Adaptive frame-skip policy:
+            // - If only slightly behind (< 1 frame), still render regularly (every other frame)
+            //   to avoid long visual freezes.
+            // - If behind by >= 1 frame, skip more aggressively, but cap consecutive skips
+            //   so the display still updates periodically.
+            if (lateness_us > 0) {
+                if (lateness_us < (int64_t)frame_period_us) {
+                    // Mild lateness: drop every other render frame.
+                    render_this_frame = ((frame_num & 1u) == 0u);
+                } else {
+                    // Significant lateness: default to skipping rendering.
+                    render_this_frame = false;
+                }
+
+                // Never skip too many frames in a row; this prevents the picture
+                // from appearing to "freeze" under sustained load.
+                if (!render_this_frame) {
+                    if (consecutive_skipped_frames >= 2u) {
+                        render_this_frame = true;
+                    }
+                }
+            }
+
+            // If we're way behind, resync to avoid a catch-up spiral.
+            if (lateness_us > (int64_t)(frame_period_us * 2)) {
+                first_frame_time = now;
+                frame_num = 0;
+                render_this_frame = true;
+                consecutive_skipped_frames = 0;
+            }
+        }
+#endif
+
         PROFILE_FRAME_START();
         
         system_clock = 0;
@@ -409,8 +469,8 @@ static void __time_critical_func(emulation_loop)(void) {
                 z80_run(line_clock);
             }
             
-            // Render line (60 fps: render all frames)
-            if (scan_line < screen_height) {
+            // Render line (adaptive frame-skip keeps audio/game speed stable)
+            if (render_this_frame && scan_line < screen_height) {
                 PROFILE_START();
                 gwenesis_vdp_render_line(scan_line);
                 PROFILE_END(vdp_time);
@@ -452,44 +512,35 @@ static void __time_critical_func(emulation_loop)(void) {
         
         frame_counter++;
         m68k.cycles -= system_clock;
+
+        if (render_this_frame) {
+            consecutive_skipped_frames = 0;
+        } else {
+            consecutive_skipped_frames++;
+        }
         
         // Update sound parameters (Core 1 runs independently)
         sound_screen_height = screen_height;
         sound_lines_per_frame = lines_per_frame;
         
 #if !DISABLE_FRAME_LIMITING
-        // Frame timing - adjust based on EMULATION_SPEED_PERCENT
-        static uint64_t first_frame = 0;
-        static uint32_t frame_num = 0;
-        uint64_t now = time_us_64();
-        
-        // Calculate frame period based on emulation speed (16666us at 100%)
-        uint64_t frame_period = (16666 * 100) / EMULATION_SPEED_PERCENT;
-        
-        // Initialize timing on first frame
-        if (frame_num == 0) {
-            first_frame = now;
-        }
-        
-        // Calculate absolute target time based on frame number to prevent drift
-        frame_num++;
-        uint64_t target_time = first_frame + (frame_num * frame_period);
-        
-        // Wait until target time
-        while (time_us_64() < target_time) {
-            uint64_t remaining = target_time - time_us_64();
-            if (remaining > 1000) {
-                // Sleep for most of the wait, but in small chunks for audio responsiveness
-                sleep_us(500);
-            } else {
-                // Last millisecond - just yield
-                tight_loop_contents();
+        {
+            const uint64_t base_period_us = is_pal ? 20000u : 16666u; // 50Hz vs 60Hz
+            const uint64_t frame_period_us = (base_period_us * 100u) / EMULATION_SPEED_PERCENT;
+
+            // Advance to next frame slot and wait if we're ahead.
+            frame_num++;
+            const uint64_t target_time = first_frame_time + ((uint64_t)frame_num * frame_period_us);
+
+            while (time_us_64() < target_time) {
+                const uint64_t remaining = target_time - time_us_64();
+                if (remaining > 1000) {
+                    // Sleep for most of the wait, but in small chunks.
+                    sleep_us(500);
+                } else {
+                    tight_loop_contents();
+                }
             }
-        }
-        
-        // If we're more than 2 frames behind, resync (prevents catchup spirals)
-        if (now > target_time + (frame_period * 2)) {
-            frame_num = 0;  // Force resync on next frame
         }
 #endif
         
