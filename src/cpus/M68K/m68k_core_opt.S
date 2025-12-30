@@ -173,13 +173,29 @@ m68k_run_fast:
     /* Check for BNE.B (0x6601-0x66FE) - ~1% of instructions */
     lsr     r0, r10, #8             @ Get high byte
     cmp     r0, #0x66               @ Is it BNE?
-    bne     .Lno_inline             @ No, use table
-    and     r0, r10, #0xFF          @ Get displacement
-    cmp     r0, #0                  @ 0x6600 = BNE.W (needs extension word)
+    beq     .Lcheck_bcc_displacement
+    
+    /* Check for BEQ.B (0x6701-0x67FE) */
+    cmp     r0, #0x67               @ Is it BEQ?
+    beq     .Lcheck_bcc_displacement
+    
+    /* Check for BRA.B (0x6001-0x60FE) */
+    cmp     r0, #0x60               @ Is it BRA?
+    bne     .Lno_inline             @ Not a handled Bcc, use table
+    
+.Lcheck_bcc_displacement:
+    and     r1, r10, #0xFF          @ Get displacement
+    cmp     r1, #0                  @ 0xXX00 = .W (needs extension word)
     beq     .Lno_inline
-    cmp     r0, #0xFF               @ 0x66FF = BNE.L (needs extension)
+    cmp     r1, #0xFF               @ 0xXXFF = .L (needs extension)
     beq     .Lno_inline
-    b       .Lhandle_bne_b          @ Handle BNE.B inline
+    
+    /* Dispatch to correct Bcc handler based on high byte (still in r0) */
+    cmp     r0, #0x66
+    beq     .Lhandle_bne_b
+    cmp     r0, #0x67
+    beq     .Lhandle_beq_b
+    b       .Lhandle_bra_b          @ Must be BRA
 
 .Lno_inline:
     /* Look up handler in jump table (r10 = opcode) */
@@ -306,6 +322,39 @@ m68k_run_fast:
     
 .Lbne_not_taken:
     add     r4, r4, #56             @ Branch not taken = 8 * 7 cycles
+    b       .Lmain_loop
+
+/*
+ * BEQ.B handler (opcodes 0x6701-0x67FE, 8-bit displacement)
+ * Branch if Z flag is set (NOT_Z_FLAG == 0)
+ */
+.Lhandle_beq_b:
+    ldr     r0, [r5, #M68K_NOT_Z_FLAG]
+    cmp     r0, #0
+    bne     .Lbeq_not_taken         @ Z is clear, don't branch
+    
+    /* Z is set - take the branch */
+    sxtb    r0, r10                 @ Sign-extend 8-bit displacement
+    ldr     r1, [r5, #M68K_PC]
+    add     r1, r1, r0              @ PC += displacement
+    str     r1, [r5, #M68K_PC]
+    add     r4, r4, #70             @ Branch taken = 10 * 7 cycles
+    b       .Lmain_loop
+    
+.Lbeq_not_taken:
+    add     r4, r4, #56             @ Branch not taken = 8 * 7 cycles
+    b       .Lmain_loop
+
+/*
+ * BRA.B handler (opcodes 0x6001-0x60FE, 8-bit displacement)
+ * Unconditional branch - always taken
+ */
+.Lhandle_bra_b:
+    sxtb    r0, r10                 @ Sign-extend 8-bit displacement
+    ldr     r1, [r5, #M68K_PC]
+    add     r1, r1, r0              @ PC += displacement
+    str     r1, [r5, #M68K_PC]
+    add     r4, r4, #70             @ BRA.B = 10 * 7 cycles
     b       .Lmain_loop
 
     .size m68k_run_fast, . - m68k_run_fast
