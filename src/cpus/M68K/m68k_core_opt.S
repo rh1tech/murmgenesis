@@ -215,9 +215,10 @@ m68k_run_fast:
 /*
  * NOP handler (opcode 0x4E71)
  * Simply add cycles and continue - 6% of all instructions
+ * Cycles: 4 * MUL(7) = 28
  */
 .Lhandle_nop:
-    add     r4, r4, #4              @ NOP takes 4 cycles
+    add     r4, r4, #28             @ NOP takes 4 cycles * 7
     b       .Lmain_loop
 
 /*
@@ -270,8 +271,8 @@ m68k_run_fast:
     add     r0, r0, r2              @ r0 = PC + displacement
     str     r0, [r5, #M68K_PC]      @ Store new PC
     
-    /* DBF branch taken: base 10 + adjustment -2 = 8 cycles */
-    add     r4, r4, #8
+    /* DBF branch taken: (10 - 2) * 7 = 56 cycles */
+    add     r4, r4, #56
     b       .Lmain_loop
     
 .Ldbf_expired:
@@ -279,8 +280,8 @@ m68k_run_fast:
     ldr     r0, [r5, #M68K_PC]
     add     r0, r0, #2              @ Skip displacement word
     str     r0, [r5, #M68K_PC]
-    /* DBF expired: base 10 + adjustment +2 = 12 cycles */
-    add     r4, r4, #12
+    /* DBF expired: (10 + 2) * 7 = 84 cycles */
+    add     r4, r4, #84
     b       .Lmain_loop
 
 /*
@@ -300,11 +301,11 @@ m68k_run_fast:
     ldr     r1, [r5, #M68K_PC]
     add     r1, r1, r0              @ PC += displacement
     str     r1, [r5, #M68K_PC]
-    add     r4, r4, #10             @ Branch taken = 10 cycles
+    add     r4, r4, #70             @ Branch taken = 10 * 7 cycles
     b       .Lmain_loop
     
 .Lbne_not_taken:
-    add     r4, r4, #8              @ Branch not taken = 8 cycles
+    add     r4, r4, #56             @ Branch not taken = 8 * 7 cycles
     b       .Lmain_loop
 
     .size m68k_run_fast, . - m68k_run_fast
