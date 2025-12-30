@@ -394,15 +394,20 @@ static void __time_critical_func(emulation_loop)(void) {
         extern volatile int zclk;
         zclk = 0;
         
+        // Run Z80 in larger chunks to reduce overhead (every 8 scanlines instead of every line)
+        int z80_lines_per_chunk = 8;
+        
         while (scan_line < lines_per_frame) {
             // Run M68K for one line
             PROFILE_START();
             m68k_run(system_clock + VDP_CYCLES_PER_LINE);
             PROFILE_END(m68k_time);
             
-            // Run Z80 for one line (moved to Core 0 to avoid multi-core sync issues)
-            int line_clock = (scan_line + 1) * VDP_CYCLES_PER_LINE;
-            z80_run(line_clock);
+            // Run Z80 every N scanlines to reduce function call overhead
+            if ((scan_line % z80_lines_per_chunk) == (z80_lines_per_chunk - 1) || scan_line == lines_per_frame - 1) {
+                int line_clock = (scan_line + 1) * VDP_CYCLES_PER_LINE;
+                z80_run(line_clock);
+            }
             
             // Render line (60 fps: render all frames)
             if (scan_line < screen_height) {
