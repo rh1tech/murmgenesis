@@ -163,6 +163,12 @@ m68k_run_fast:
     movw    r0, #0x4E71
     cmp     r10, r0
     beq     .Lhandle_nop
+    
+    /* Check for DBF Dn (0x51C8-0x51CF) - 9% of instructions combined */
+    movw    r0, #0x51C8
+    sub     r1, r10, r0             @ r1 = opcode - 0x51C8
+    cmp     r1, #8                  @ Check if in range 0-7 (D0-D7)
+    blo     .Lhandle_dbf            @ Unsigned less than = in range
 
 .Lno_inline:
     /* Look up handler in jump table (r10 = opcode) */
@@ -246,9 +252,7 @@ m68k_run_fast:
     /* Counter not expired - fetch displacement and branch */
     /* r0 still has PC from earlier check */
     ldr     r1, [r9]                @ r1 = ROM_DATA pointer
-    ldrh    r2, [r1, r0]            @ r2 = displacement word (byte-swapped in ROM)
-    /* ROM is byte-swapped (big-endian M68K), so we need rev16 */
-    rev16   r2, r2                  @ Byte swap to get correct value
+    ldrh    r2, [r1, r0]            @ r2 = displacement word (already byte-swapped during ROM load)
     sxth    r2, r2                  @ Sign extend to 32-bit
     
     /* New PC = (PC pointing at disp) + displacement */
