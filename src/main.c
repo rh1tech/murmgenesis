@@ -347,6 +347,8 @@ static void __scratch_x("sound") sound_core(void) {
             ym2612_clock = 0;
             ym2612_index = 0;
             
+            // DAC buffer is continuous stream - no reset needed
+            
             // Sound chips generate samples based on their internal state
             // (which was updated by Z80 writes from Core 0)
             for (int line = 0; line < lpf; line++) {
@@ -456,6 +458,8 @@ static void __time_critical_func(emulation_loop)(void) {
         // Reset Z80 clock for new frame (now runs on Core 0)
         extern volatile int zclk;
         zclk = 0;
+        
+        // DAC buffer is continuous stream - no reset needed
         
         // ==================================================================
         // PHASE 1: Run all emulation first (M68K + Z80 + interrupts)

@@ -659,6 +659,14 @@ typedef struct
 /* emulated chip */
 static YM2612 ym2612;
 
+/* DAC sample buffer for M68K-driven playback (e.g., Sonic SEGA jingle, MK2) */
+/* Stores DAC samples written in bursts to replay during sound generation */
+/* 16384 entries = 64KB, enough for ~18 frames of DAC samples */
+#define DAC_BUFFER_SIZE 16384
+static INT32 dac_buffer[DAC_BUFFER_SIZE];
+static volatile int dac_write_idx = 0;  /* Write index (Core 0) */
+static volatile int dac_read_idx = 0;   /* Read index (Core 1) */
+
 /* current chip state */
 static INT32  m2,c1,c2;   /* Phase Modulation input for operators 2,3,4 */
 static INT32  mem;        /* one sample delay memory */
@@ -1980,6 +1988,10 @@ void YM2612ResetChip(void)
   ym2612.dacen            = 0;
   ym2612.dacout           = 0;
   ym2612.dac_stable_counter = 0;
+  
+  /* Reset DAC buffer */
+  dac_write_idx = 0;
+  dac_read_idx = 0;
 
   set_timers(0x30);
   ym2612.OPN.ST.TB = 0;
@@ -1999,6 +2011,18 @@ void YM2612ResetChip(void)
     OPNWriteReg(i      ,0);
     OPNWriteReg(i|0x100,0);
   }
+}
+
+/* Reset DAC buffer write index - called from Core 0 at frame start */
+void ym2612_reset_dac_buffer_write(void)
+{
+  dac_write_idx = 0;
+}
+
+/* Reset DAC buffer read index - called from Core 1 before processing */
+void ym2612_reset_dac_buffer_read(void)
+{
+  dac_read_idx = 0;
 }
 
 /* YM2612 execution */
@@ -2032,9 +2056,31 @@ static inline void YM2612Update(int16_t *buffer, int length)
   refresh_fc_eg_chan(&ym2612.CH[4]);
   refresh_fc_eg_chan(&ym2612.CH[5]);
 
+  /* Calculate starting clock for this update batch */
+  UINT32 current_clock = ym2612_clock;
+  
+  /* DAC resampling: Sonic DAC ~18KHz, output ~53KHz */
+  /* Step = (18000 << 16) / 53000 ≈ 22282 (0.34 in 16.16 fixed point) */
+  /* This means consume 1 DAC sample every ~3 output samples */
+  static UINT32 dac_accum = 0;
+  #define DAC_RESAMPLE_STEP 22282  /* 18KHz / 53KHz in 16.16 fixed point */
+
   /* buffering */
   for(i=0; i < length ; i++)
   {
+    /* Advance sample clock */
+    current_clock += ym2612.divisor;
+    
+    /* Consume DAC samples at fixed rate (18KHz -> 53KHz upsampling) */
+    if (ym2612.dacen && dac_read_idx != dac_write_idx) {
+      dac_accum += DAC_RESAMPLE_STEP;
+      if (dac_accum >= 0x10000) {
+        dac_accum -= 0x10000;
+        ym2612.dacout = dac_buffer[dac_read_idx];
+        dac_read_idx = (dac_read_idx + 1) & (DAC_BUFFER_SIZE - 1);
+      }
+    }
+    
     /* clear outputs */
     out_fm[0] = 0;
     out_fm[1] = 0;
@@ -2187,7 +2233,17 @@ void YM2612Write(unsigned int a, unsigned int v,  int target)
           switch( addr )
           {
           case 0x2a: /* DAC data (ym2612) */
-            ym2612.dacout =((int)v - 0x80) << 6; /* convert to 14-bit signed output */
+            {
+              INT32 dac_value = ((int)v - 0x80) << 6; /* convert to 14-bit signed output */
+              ym2612.dacout = dac_value;
+              
+              /* Buffer DAC write for M68K-driven playback */
+              int next_idx = (dac_write_idx + 1) & (DAC_BUFFER_SIZE - 1);
+              if (next_idx != dac_read_idx) {  /* Don't overflow */
+                dac_buffer[dac_write_idx] = dac_value;
+                dac_write_idx = next_idx;
+              }
+            }
             break;
           case 0x2b: /* DAC Sel  (ym2612) */
             /* b7 = dac enable */
