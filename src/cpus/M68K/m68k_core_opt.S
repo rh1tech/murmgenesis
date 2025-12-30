@@ -111,11 +111,13 @@ m68k_run_fast:
     /* Load ROM_DATA pointer for inline fetch */
     ldr     r9, =ROM_DATA           @ r9 = pointer to ROM_DATA variable
     
-.Lmain_loop:
-    /* Check cycles */
+    /* Load current cycles into r4 (kept in register for loop) */
     ldr     r4, [r5, #M68K_CYCLES]
+    
+.Lmain_loop:
+    /* Check cycles (r4 = current cycles, r6 = target) */
     cmp     r4, r6
-    bhs     .Lexit
+    bhs     .Lexit_store
     
     /*
      * Inline opcode fetch - optimized for ROM (most common case)
@@ -123,41 +125,52 @@ m68k_run_fast:
      */
     ldr     r0, [r5, #M68K_PC]      @ r0 = PC
     
-    /* Check if PC is in ROM (< 0x800000) */
-    ldr     r1, =0x800000
+    /* Check if PC is in ROM (< 0x800000) - use movw for efficiency */
+    movw    r1, #0
+    movt    r1, #0x80               @ r1 = 0x800000
     cmp     r0, r1
     bhs     .Lslow_fetch            @ PC >= 0x800000, use C helper
     
     /* Fast ROM fetch inline */
-    ldr     r1, [r9]                @ r1 = ROM_DATA pointer (r9 was loaded earlier)
-    ldrh    r2, [r1, r0]            @ r2 = opcode from ROM
+    ldr     r1, [r9]                @ r1 = ROM_DATA pointer
+    ldrh    r10, [r1, r0]           @ r10 = opcode from ROM (kept for cycle lookup)
     add     r0, r0, #2              @ PC += 2
     str     r0, [r5, #M68K_PC]      @ Store updated PC
-    strh    r2, [r5, #M68K_IR]      @ Store IR
-    mov     r0, r2                  @ r0 = opcode for handler lookup
+    strh    r10, [r5, #M68K_IR]     @ Store IR
     b       .Lfetch_done
     
 .Lslow_fetch:
     /* Fall back to C helper for RAM/IO access */
+    str     r4, [r5, #M68K_CYCLES]  @ Save cycles before call (may be modified)
     bl      m68k_fetch_opcode       @ returns opcode in r0, also sets REG_IR
+    mov     r10, r0                 @ r10 = opcode
+    ldr     r4, [r5, #M68K_CYCLES]  @ Reload cycles (may have changed)
     
 .Lfetch_done:
-    /* Look up handler in jump table */
-    lsl     r1, r0, #2              @ r1 = opcode * 4 (table offset)
+    /* Look up handler in jump table (r10 = opcode) */
+    lsl     r1, r10, #2             @ r1 = opcode * 4 (table offset)
     ldr     r2, [r7, r1]            @ r2 = handler function pointer
+    
+    /* Save cycles before handler call (handlers may modify via USE_CYCLES) */
+    str     r4, [r5, #M68K_CYCLES]
     
     /* Call instruction handler */
     blx     r2
     
-    /* Add cycles for this instruction */
-    ldrh    r0, [r5, #M68K_IR]      @ load IR (16-bit)
-    ldrb    r1, [r8, r0]            @ r1 = cycle count
-    ldr     r2, [r5, #M68K_CYCLES]
-    add     r2, r2, r1
-    str     r2, [r5, #M68K_CYCLES]
+    /* Reload cycles (handler may have added extra via USE_CYCLES) */
+    ldr     r4, [r5, #M68K_CYCLES]
+    
+    /* Add base cycles for this instruction (r10 still has opcode) */
+    ldrb    r1, [r8, r10]           @ r1 = cycle count
+    add     r4, r4, r1              @ r4 += cycles
     
     /* Loop back */
     b       .Lmain_loop
+
+.Lexit_store:
+    /* Store final cycles value */
+    str     r4, [r5, #M68K_CYCLES]
+    b       .Lexit
     
 .Lstopped:
     /* CPU is stopped, advance to target cycles */
