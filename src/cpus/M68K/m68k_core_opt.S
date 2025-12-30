@@ -108,6 +108,9 @@ m68k_run_fast:
     ldr     r8, =m68k_cycles_table
     ldr     r8, [r8]                @ r8 = actual cycles table pointer
     
+    /* Load ROM_DATA pointer for inline fetch */
+    ldr     r9, =ROM_DATA           @ r9 = pointer to ROM_DATA variable
+    
 .Lmain_loop:
     /* Check cycles */
     ldr     r4, [r5, #M68K_CYCLES]
@@ -115,11 +118,30 @@ m68k_run_fast:
     bhs     .Lexit
     
     /*
-     * Use C helper function for instruction fetch
-     * This handles all memory types and updates PC/IR properly
+     * Inline opcode fetch - optimized for ROM (most common case)
+     * PC < 0x800000 = ROM, else fall back to C helper
      */
+    ldr     r0, [r5, #M68K_PC]      @ r0 = PC
+    
+    /* Check if PC is in ROM (< 0x800000) */
+    ldr     r1, =0x800000
+    cmp     r0, r1
+    bhs     .Lslow_fetch            @ PC >= 0x800000, use C helper
+    
+    /* Fast ROM fetch inline */
+    ldr     r1, [r9]                @ r1 = ROM_DATA pointer (r9 was loaded earlier)
+    ldrh    r2, [r1, r0]            @ r2 = opcode from ROM
+    add     r0, r0, #2              @ PC += 2
+    str     r0, [r5, #M68K_PC]      @ Store updated PC
+    strh    r2, [r5, #M68K_IR]      @ Store IR
+    mov     r0, r2                  @ r0 = opcode for handler lookup
+    b       .Lfetch_done
+    
+.Lslow_fetch:
+    /* Fall back to C helper for RAM/IO access */
     bl      m68k_fetch_opcode       @ returns opcode in r0, also sets REG_IR
     
+.Lfetch_done:
     /* Look up handler in jump table */
     lsl     r1, r0, #2              @ r1 = opcode * 4 (table offset)
     ldr     r2, [r7, r1]            @ r2 = handler function pointer
@@ -128,7 +150,7 @@ m68k_run_fast:
     blx     r2
     
     /* Add cycles for this instruction */
-    ldr     r0, [r5, #M68K_IR]      @ load IR
+    ldrh    r0, [r5, #M68K_IR]      @ load IR (16-bit)
     ldrb    r1, [r8, r0]            @ r1 = cycle count
     ldr     r2, [r5, #M68K_CYCLES]
     add     r2, r2, r1
