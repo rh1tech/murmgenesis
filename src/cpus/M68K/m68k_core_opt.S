@@ -170,6 +170,13 @@ m68k_run_fast:
     cmp     r1, #8                  @ Check if in range 0-7 (D0-D7)
     blo     .Lhandle_dbf            @ Unsigned less than = in range
     
+    /* Check for MOVEQ (0x7000-0x7EFF, bit 8 must be 0) */
+    /* Format: 0111 Rrr0 dddddddd where Rrr=Dn, d=data */
+    and     r0, r10, #0xF100        @ Mask to get 7x0x pattern
+    movw    r1, #0x7000
+    cmp     r0, r1
+    beq     .Lhandle_moveq
+    
     /* Check for BNE.B (0x6601-0x66FE) - ~1% of instructions */
     lsr     r0, r10, #8             @ Get high byte
     cmp     r0, #0x66               @ Is it BNE?
@@ -355,6 +362,36 @@ m68k_run_fast:
     add     r1, r1, r0              @ PC += displacement
     str     r1, [r5, #M68K_PC]
     add     r4, r4, #70             @ BRA.B = 10 * 7 cycles
+    b       .Lmain_loop
+
+/*
+ * MOVEQ handler (opcodes 0x7000-0x7EFF where bit 8 = 0)
+ * Move quick - sign-extend 8-bit immediate to Dn
+ * Sets N, Z; clears V, C
+ * 4 cycles
+ */
+.Lhandle_moveq:
+    /* Extract register number (bits 9-11) */
+    lsr     r0, r10, #9             @ r0 = (opcode >> 9)
+    and     r0, r0, #7              @ r0 = register number
+    lsl     r0, r0, #2              @ r0 = register offset
+    
+    /* Sign-extend 8-bit data to 32-bit */
+    sxtb    r1, r10                 @ r1 = sign-extended data
+    
+    /* Store to Dn */
+    add     r2, r5, #M68K_DAR
+    str     r1, [r2, r0]            @ Dn = data
+    
+    /* Set flags: N = bit 31, Z = (data == 0), V = 0, C = 0 */
+    lsr     r0, r1, #24             @ N flag = high byte (bit 31 in bit 7)
+    str     r0, [r5, #M68K_N_FLAG]
+    str     r1, [r5, #M68K_NOT_Z_FLAG]  @ NOT_Z = value (0 if zero)
+    mov     r0, #0
+    str     r0, [r5, #M68K_V_FLAG]
+    str     r0, [r5, #M68K_C_FLAG]
+    
+    add     r4, r4, #28             @ MOVEQ = 4 * 7 cycles
     b       .Lmain_loop
 
     .size m68k_run_fast, . - m68k_run_fast
