@@ -394,8 +394,8 @@ static void __time_critical_func(emulation_loop)(void) {
         extern volatile int zclk;
         zclk = 0;
         
-        // Run Z80 in larger chunks to reduce overhead (every 8 scanlines instead of every line)
-        int z80_lines_per_chunk = 8;
+        // Run Z80 in larger chunks to reduce overhead (every 32 scanlines instead of every line)
+        int z80_lines_per_chunk = 32;
         
         while (scan_line < lines_per_frame) {
             // Run M68K for one line

@@ -100,6 +100,7 @@ set(GWENESIS_SOURCES
     src/sound/gwenesis_sn76489.c
     src/sound/ym2612.c
     src/sound/z80inst.c
+    src/sound/z80_mem_opt.S
     # VDP
     src/vdp/gwenesis_vdp_gfx.c
     src/vdp/gwenesis_vdp_mem.c

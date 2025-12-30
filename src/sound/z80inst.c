@@ -39,7 +39,9 @@ static int initialized = 0;
 
 unsigned char *Z80_RAM;
 
-static Z80 cpu;
+/* Make cpu and current_timeslice globally accessible for assembly optimization */
+Z80 cpu;
+int current_timeslice = 0;
 
 void ResetZ80(register Z80 *R);
 
@@ -83,7 +85,6 @@ void z80_start() {
 void z80_pulse_reset() {
   ResetZ80(&cpu);
 }
-static int current_timeslice = 0;
 
 void z80_run(int target) {
 
@@ -212,14 +213,16 @@ unsigned int zbankreg_mem_r8(unsigned int address)
     return Z80_BANK;
 }
 
-static inline void zbankreg_mem_w8(unsigned int value) {
+/* Make this function non-inline and non-static so assembly can call it */
+void zbankreg_mem_w8(unsigned int value) {
   Z80_BANK >>= 1;
   Z80_BANK |= (value & 1) << 8;
   z80_log(__FUNCTION__,"Z80 bank points to: %06x", Z80_BANK << 15);
   return;
 }
 
-static inline unsigned int zbank_mem_r8(unsigned int address)
+/* Make these functions non-inline and non-static so assembly can call them */
+unsigned int zbank_mem_r8(unsigned int address)
 {
     address &= 0x7FFF;
     address |= (Z80_BANK << 15);
@@ -228,7 +231,7 @@ static inline unsigned int zbank_mem_r8(unsigned int address)
     return m68k_read_memory_8(address);
 }
 
-static inline void zbank_mem_w8(unsigned int address, unsigned int value) {
+void zbank_mem_w8(unsigned int address, unsigned int value) {
   address &= 0x7FFF;
   address |= (Z80_BANK << 15);
 
@@ -259,64 +262,15 @@ word LoopZ80(register Z80 *R)
     return 0;
 }
 
-byte RdZ80(register word Addr) {
-
-  if (Addr < 0x4000)
-    return Z80_RAM[Addr & 0x1FFF];
-
-  if (Addr < 0x6000)
-    return YM2612Read(zclk + current_timeslice - (cpu.ICount * Z80_FREQ_DIVISOR));
-
-  z80_log(__FUNCTION__, "addr= %x", Addr);
-
-  if (Addr >= 0x8000)
-    return zbank_mem_r8(Addr);
-
-  z80_log(__FUNCTION__, "addr= %x", Addr);
-
-  return 0xFF;
-}
+/* 
+ * Z80 memory access functions now implemented in assembly (z80_mem_opt.S)
+ * for maximum performance. These functions are called thousands of times
+ * per frame and are critical bottlenecks.
+ */
+extern byte RdZ80(register word Addr);
+extern void WrZ80(register word Addr, register byte Value);
 
 extern int system_clock;
-
-void WrZ80(register word Addr, register byte Value) {
-
-  // ZRAM & mirror
-  if (Addr < 0x4000) {
-    Z80_RAM[Addr&0x1FFF] = Value;
-    return;
-  }
-
-  // @4000-4003
-  if (Addr < 0x6000) {
-    z80_log("Z80","ZZYM(%x,%x) zk=%d,tgt=%d",Addr&0x3,Value, zclk, zclk + current_timeslice -(cpu.ICount * Z80_FREQ_DIVISOR) );
-    YM2612Write(Addr&0x3, Value, zclk + current_timeslice -(cpu.ICount * Z80_FREQ_DIVISOR) );
-    return;
-  }
-
-  // @6000
-  if (Addr == 0x6000) {
-    zbankreg_mem_w8(Value);
-    return;
-  }
-
-  // @7F11
-  if (Addr ==  0x7F11) {
-    z80_log("Z80","ZZSN zk=%d,tgt=%d", zclk, zclk + current_timeslice -(cpu.ICount * Z80_FREQ_DIVISOR) );
-    gwenesis_SN76489_Write(Value,zclk + current_timeslice -(cpu.ICount * Z80_FREQ_DIVISOR) );
-    return;
-  }
- 
-  z80_log("Z80","WrZ80  %x %x", Addr, Value);
-
-  if (Addr >= 0x8000) {
-    zbank_mem_w8(Addr, Value);
-    return;
-  }
-  z80_log("Z80","WrZ80  %x %x", Addr, Value);
-
-}
-
 
 byte InZ80(register word Port) {return 0;}
 void OutZ80(register word Port, register byte Value) {;}
