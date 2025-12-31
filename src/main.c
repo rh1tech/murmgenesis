@@ -689,37 +689,83 @@ extern unsigned char button_state[];
 // Bit 1: Down  
 // Bit 2: Left
 // Bit 3: Right
-// Bit 4: B (SNES Y)
-// Bit 5: C (SNES B)
-// Bit 6: A (SNES A)
+// Bit 4: B
+// Bit 5: C
+// Bit 6: A
 // Bit 7: Start
+//
+// NES Controller mapping:
+// - D-pad → Genesis D-pad
+// - NES B → Genesis B
+// - NES A → Genesis A  
+// - NES Start → Genesis Start
+// - NES Select+B → Genesis C (button combo)
+// - NES Select+A → Genesis C (button combo)
 
 void gwenesis_io_get_buttons(void) {
 #ifdef NESPAD_GPIO_CLK
     // Read gamepad state
     nespad_read();
     
-    // Map NES/SNES buttons to Genesis controller
+    // Map NES buttons to Genesis controller
     // Pad 1
     button_state[0] = 0xFF; // Start with all buttons released
+    
+    // D-pad mapping
     if (nespad_state & DPAD_UP)    button_state[0] &= ~(1 << 0);
     if (nespad_state & DPAD_DOWN)  button_state[0] &= ~(1 << 1);
     if (nespad_state & DPAD_LEFT)  button_state[0] &= ~(1 << 2);
     if (nespad_state & DPAD_RIGHT) button_state[0] &= ~(1 << 3);
-    if (nespad_state & DPAD_B)     button_state[0] &= ~(1 << 4); // B = SNES Y
-    if (nespad_state & DPAD_A)     button_state[0] &= ~(1 << 5); // C = SNES B  
-    if (nespad_state & DPAD_Y)     button_state[0] &= ~(1 << 6); // A = SNES A
+    
+    // Button mapping with SELECT combinations
+    bool select_pressed = (nespad_state & DPAD_SELECT);
+    
+    if (nespad_state & DPAD_B) {
+        if (select_pressed) {
+            button_state[0] &= ~(1 << 5); // SELECT+B = Genesis C
+        } else {
+            button_state[0] &= ~(1 << 4); // B = Genesis B
+        }
+    }
+    
+    if (nespad_state & DPAD_A) {
+        if (select_pressed) {
+            button_state[0] &= ~(1 << 5); // SELECT+A = Genesis C
+        } else {
+            button_state[0] &= ~(1 << 6); // A = Genesis A
+        }
+    }
+    
     if (nespad_state & DPAD_START) button_state[0] &= ~(1 << 7);
     
     // Pad 2
     button_state[1] = 0xFF;
+    
+    // D-pad mapping
     if (nespad_state2 & DPAD_UP)    button_state[1] &= ~(1 << 0);
     if (nespad_state2 & DPAD_DOWN)  button_state[1] &= ~(1 << 1);
     if (nespad_state2 & DPAD_LEFT)  button_state[1] &= ~(1 << 2);
     if (nespad_state2 & DPAD_RIGHT) button_state[1] &= ~(1 << 3);
-    if (nespad_state2 & DPAD_B)     button_state[1] &= ~(1 << 4);
-    if (nespad_state2 & DPAD_A)     button_state[1] &= ~(1 << 5);
-    if (nespad_state2 & DPAD_Y)     button_state[1] &= ~(1 << 6);
+    
+    // Button mapping with SELECT combinations
+    bool select_pressed2 = (nespad_state2 & DPAD_SELECT);
+    
+    if (nespad_state2 & DPAD_B) {
+        if (select_pressed2) {
+            button_state[1] &= ~(1 << 5); // SELECT+B = Genesis C
+        } else {
+            button_state[1] &= ~(1 << 4); // B = Genesis B
+        }
+    }
+    
+    if (nespad_state2 & DPAD_A) {
+        if (select_pressed2) {
+            button_state[1] &= ~(1 << 5); // SELECT+A = Genesis C
+        } else {
+            button_state[1] &= ~(1 << 6); // A = Genesis A
+        }
+    }
+    
     if (nespad_state2 & DPAD_START) button_state[1] &= ~(1 << 7);
 #else
     // No gamepad - all buttons released
