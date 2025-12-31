@@ -8,6 +8,7 @@
 #include "hardware/vreg.h"
 #include "hardware/clocks.h"
 #include "hardware/structs/qmi.h"
+#include "hardware/watchdog.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -42,6 +43,9 @@
 
 // Gamepad driver
 #include "nespad/nespad.h"
+
+// ROM selector
+#include "rom_selector.h"
 
 //=============================================================================
 // Profiling
@@ -626,7 +630,7 @@ int main(void) {
     graphics_set_res(SCREEN_WIDTH, SCREEN_HEIGHT);
     graphics_set_shift(0, 0);
     
-    setup_genesis_palette();
+    // Don't call setup_genesis_palette() yet - we'll do it after ROM selector
     LOG("HDMI initialized\n");
     
     // Initialize semaphore for sound core sync
@@ -640,27 +644,7 @@ int main(void) {
     sem_acquire_blocking(&render_start_semaphore);
     LOG("Sound core started\n");
     
-    // Load ROM
-    LOG("Loading ROM...\n");
-    if (!load_rom("/genesis/test.md")) {
-        LOG("Failed to load ROM!\n");
-        // Try alternate paths
-        if (!load_rom("/GENESIS/test.md") && 
-            !load_rom("/genesis/test.bin") &&
-            !load_rom("/GENESIS/test.gen")) {
-            LOG("Could not find test ROM!\n");
-            while (1) {
-                tight_loop_contents();
-            }
-        }
-    }
-    
-    // Initialize emulator
-    genesis_init();
-    
-    // Audio is initialized on Core 1 (render_core)
-    
-    // Initialize gamepad
+    // Initialize gamepad (needed for ROM selector)
     LOG("Initializing gamepad...\n");
 #ifdef NESPAD_GPIO_CLK
     if (nespad_begin(clock_get_hz(clk_sys) / 1000, NESPAD_GPIO_CLK, NESPAD_GPIO_DATA, NESPAD_GPIO_LATCH)) {
@@ -672,6 +656,40 @@ int main(void) {
 #else
     LOG("Gamepad not configured for this board\n");
 #endif
+    
+    // Set up a simple palette for ROM selector (before calling it)
+    LOG("Setting up ROM selector palette...\n");
+    graphics_set_palette(0, 0x000000);      // Black
+    graphics_set_palette(63, 0xFFFFFF);     // White (max visible index with 0x3F mask)
+    graphics_set_palette(32, 0xFF0000);     // Red for title
+    graphics_set_palette(16, 0x404040);     // Dark gray for scrollbar
+    
+    // Show ROM selector
+    LOG("Showing ROM selector...\n");
+    static char selected_rom[MAX_ROM_PATH];
+    if (!rom_selector_show(selected_rom, sizeof(selected_rom), (uint8_t *)SCREEN)) {
+        LOG("No ROM selected!\n");
+        while (1) {
+            tight_loop_contents();
+        }
+    }
+    
+    // Set up Genesis palette after ROM selection
+    setup_genesis_palette();
+    
+    // Load selected ROM
+    LOG("Loading ROM: %s\n", selected_rom);
+    if (!load_rom(selected_rom)) {
+        LOG("Failed to load ROM: %s\n", selected_rom);
+        while (1) {
+            tight_loop_contents();
+        }
+    }
+    
+    // Initialize emulator
+    genesis_init();
+    
+    // Audio is initialized on Core 1 (render_core)
     
     LOG("Starting emulation...\n");
     
@@ -706,6 +724,13 @@ void gwenesis_io_get_buttons(void) {
 #ifdef NESPAD_GPIO_CLK
     // Read gamepad state
     nespad_read();
+    
+    // Check for SELECT+START combo to return to ROM selector
+    if ((nespad_state & DPAD_SELECT) && (nespad_state & DPAD_START)) {
+        // Trigger watchdog reset to restart and show ROM selector
+        watchdog_reboot(0, 0, 10);
+        while(1) tight_loop_contents();
+    }
     
     // Map NES buttons to Genesis controller
     // Pad 1

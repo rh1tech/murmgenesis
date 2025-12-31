@@ -119,6 +119,7 @@ set_source_files_properties(src/cpus/M68K/m68kcpu.c PROPERTIES
 
 add_executable(murmgenesis
     src/main.c
+    src/rom_selector.c
     ${GWENESIS_SOURCES}
 )
 
