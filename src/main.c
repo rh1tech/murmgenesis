@@ -401,6 +401,7 @@ static void __time_critical_func(emulation_loop)(void) {
     uint64_t first_frame_time = 0;
     uint32_t frame_num = 0;
     uint32_t consecutive_skipped_frames = 0;
+    uint32_t render_phase = 0;  // Alternating pattern for frame skip to avoid stuck sprites
 
     while (1) {
         int hint_counter = gwenesis_vdp_regs[10];
@@ -441,8 +442,12 @@ static void __time_critical_func(emulation_loop)(void) {
             const uint64_t expected_start = first_frame_time + ((uint64_t)frame_num * frame_period_us);
             const int64_t lateness_us = (int64_t)now - (int64_t)expected_start;
 
-            // Fixed frame-skip: render every 2nd frame (30 fps)
-            render_this_frame = ((frame_num & 1u) == 0u);
+            // Alternating frame-skip pattern to avoid stuck blinking sprites
+            // Uses 2-2-1-1 pattern over 6 frames: render 3, skip 3
+            // This ensures blinking sprites remain visible
+            const uint32_t pattern_pos = render_phase % 6;
+            render_this_frame = (pattern_pos == 0 || pattern_pos == 1 || pattern_pos == 3);
+            render_phase++;
 
             // If we're way behind, resync to avoid a catch-up spiral.
             if (lateness_us > (int64_t)(frame_period_us * 2)) {
@@ -450,6 +455,7 @@ static void __time_critical_func(emulation_loop)(void) {
                 frame_num = 0;
                 render_this_frame = true;
                 consecutive_skipped_frames = 0;
+                render_phase = 0;
             }
         }
 #endif
