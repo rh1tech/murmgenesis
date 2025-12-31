@@ -2059,11 +2059,21 @@ static inline void YM2612Update(int16_t *buffer, int length)
   /* Calculate starting clock for this update batch */
   UINT32 current_clock = ym2612_clock;
   
-  /* DAC resampling: Sonic DAC ~18KHz, output ~53KHz */
-  /* Step = (18000 << 16) / 53000 ≈ 22282 (0.34 in 16.16 fixed point) */
-  /* This means consume 1 DAC sample every ~3 output samples */
+  /* DAC resampling for burst mode (M68K-driven like Sonic) */
   static UINT32 dac_accum = 0;
   #define DAC_RESAMPLE_STEP 22282  /* 18KHz / 53KHz in 16.16 fixed point */
+  
+  /* Check buffer level to detect burst vs streaming mode */
+  /* Burst mode (M68K): >50 samples accumulated = resample from buffer */
+  /* Streaming mode (Z80): <50 samples = use direct dacout (already set) */
+  int dac_available = (dac_write_idx - dac_read_idx) & (DAC_BUFFER_SIZE - 1);
+  int burst_mode = (dac_available > 50);
+  
+  /* In streaming mode, drain buffer to stay in sync but don't use it */
+  if (!burst_mode) {
+    dac_read_idx = dac_write_idx;  /* Discard buffered samples */
+    dac_accum = 0;
+  }
 
   /* buffering */
   for(i=0; i < length ; i++)
@@ -2071,8 +2081,9 @@ static inline void YM2612Update(int16_t *buffer, int length)
     /* Advance sample clock */
     current_clock += ym2612.divisor;
     
-    /* Consume DAC samples at fixed rate (18KHz -> 53KHz upsampling) */
-    if (ym2612.dacen && dac_read_idx != dac_write_idx) {
+    /* Only use buffer resampling in burst mode (Sonic/MK2) */
+    /* In streaming mode (Jim), dacout is already set correctly by direct writes */
+    if (burst_mode && ym2612.dacen && dac_read_idx != dac_write_idx) {
       dac_accum += DAC_RESAMPLE_STEP;
       if (dac_accum >= 0x10000) {
         dac_accum -= 0x10000;
