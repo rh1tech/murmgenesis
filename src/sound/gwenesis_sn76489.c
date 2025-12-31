@@ -75,6 +75,7 @@ void gwenesis_SN76489_Init( int PSGClockValue, int SamplingRate,int freq_divisor
 {
     gwenesis_SN76489.dClock=(float)PSGClockValue/16/SamplingRate;
     gwenesis_SN76489.divisor = freq_divisor;
+    gwenesis_SN76489.WhiteNoiseFeedback = 0x0009; /* Bits 0 and 3 for SN76489 white noise */
 
     gwenesis_SN76489_Reset();
 }
@@ -83,12 +84,11 @@ void gwenesis_SN76489_Reset()
 {
     int i;
 
-    for(i = 0; i <= 3; i++)
+    for(i = 0; i <= 2; i++)
     {
-        /* Initialise PSG state */
+        /* Initialise tone PSG state */
         gwenesis_SN76489.Registers[2*i] = 1;         /* tone freq=1 */
         gwenesis_SN76489.Registers[2*i+1] = 0xf;     /* vol=off */
-        gwenesis_SN76489.NoiseFreq = 0x10;
 
         /* Set counters to 0 */
         gwenesis_SN76489.ToneFreqVals[i] = 0;
@@ -99,6 +99,14 @@ void gwenesis_SN76489_Reset()
         /* Set intermediate positions to do-not-use value */
         gwenesis_SN76489.IntermediatePos[i] = LONG_MIN;
     }
+    
+    /* Initialize noise channel (channel 3) */
+    gwenesis_SN76489.Registers[6] = 0x00;        /* Noise control */
+    gwenesis_SN76489.Registers[7] = 0xf;         /* Noise vol=off */
+    gwenesis_SN76489.NoiseFreq = 0x10;
+    gwenesis_SN76489.ToneFreqVals[3] = 0;
+    gwenesis_SN76489.ToneFreqPos[3] = 1;
+    gwenesis_SN76489.IntermediatePos[3] = LONG_MIN;
 
     gwenesis_SN76489.LatchedRegister=0;
 
