@@ -21,3 +21,4 @@ third_party/
 # macOS
 .DS_Store
 release/
+*.bak*
