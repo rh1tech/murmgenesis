@@ -247,8 +247,8 @@ static void draw_scrollbar(uint8_t *screen, int scroll_offset) {
 
 // Render ROM menu with scrolling
 static void render_rom_menu(uint8_t *screen, int selected, int scroll_offset) {
-    // Clear menu area
-    fill_rect(screen, MENU_X, MENU_Y, MENU_WIDTH, VISIBLE_LINES * LINE_HEIGHT, 0);
+    // Clear menu area (including space for highlight border on left)
+    fill_rect(screen, MENU_X - 2, MENU_Y - 2, MENU_WIDTH + 4, (VISIBLE_LINES * LINE_HEIGHT) + 4, 0);
     
     if (rom_count == 0) {
         draw_text(screen, MENU_X, MENU_Y, "NO ROMS FOUND", 63);
@@ -324,6 +324,7 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
     // Wait for input
     int prev_selected = -1;
     int prev_scroll = -1;
+    uint16_t prev_buttons = 0;  // Track previous button state
     
     // Wait a moment for display to settle
     sleep_ms(100);
@@ -340,43 +341,40 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
         nespad_read();
         uint16_t buttons = nespad_state;
         
-        // Handle input
-        bool changed = false;
+        // Detect button press (transition from not pressed to pressed)
+        uint16_t buttons_pressed = buttons & ~prev_buttons;
+        prev_buttons = buttons;
         
-        if (buttons & DPAD_UP) {
-            if (selected > 0) {
-                selected--;
-                // Scroll up if needed
-                if (selected < scroll_offset) {
-                    scroll_offset = selected;
-                }
-                changed = true;
+        // Handle input (only on button press, not hold)
+        if (buttons_pressed & DPAD_UP) {
+            selected--;
+            if (selected < 0) {
+                selected = rom_count - 1;  // Wrap to last
+                scroll_offset = (rom_count > VISIBLE_LINES) ? (rom_count - VISIBLE_LINES) : 0;
+            } else if (selected < scroll_offset) {
+                scroll_offset = selected;
             }
-            sleep_ms(150);  // Debounce
         }
         
-        if (buttons & DPAD_DOWN) {
-            if (selected < rom_count - 1) {
-                selected++;
-                // Scroll down if needed
-                if (selected >= scroll_offset + VISIBLE_LINES) {
-                    scroll_offset = selected - VISIBLE_LINES + 1;
-                }
-                changed = true;
+        if (buttons_pressed & DPAD_DOWN) {
+            selected++;
+            if (selected >= rom_count) {
+                selected = 0;  // Wrap to first
+                scroll_offset = 0;
+            } else if (selected >= scroll_offset + VISIBLE_LINES) {
+                scroll_offset = selected - VISIBLE_LINES + 1;
             }
-            sleep_ms(150);  // Debounce
         }
         
-        if ((buttons & DPAD_A) || (buttons & DPAD_START)) {
+        if (buttons_pressed & (DPAD_A | DPAD_START)) {
             if (rom_count > 0) {
                 // Build full path
                 snprintf(selected_rom_path, buffer_size, "/genesis/%s", rom_list[selected].filename);
                 return true;
             }
-            sleep_ms(200);
         }
         
-        sleep_ms(16);  // ~60Hz update rate
+        sleep_ms(50);  // Update rate
     }
     
     return false;
