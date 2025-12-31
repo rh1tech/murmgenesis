@@ -22,7 +22,7 @@
 .extern cpu
 
 /* Constants */
-.equ Z80_FREQ_DIVISOR, 2
+.equ Z80_FREQ_DIVISOR, 15
 .equ Z80_ICOUNT_OFFSET, 84  /* Offset of ICount in Z80 structure */
 
 /*
@@ -73,7 +73,8 @@ RdZ80:
     
     ldr     r1, =cpu
     ldr     r3, [r1, #Z80_ICOUNT_OFFSET]  /* r3 = cpu.ICount */
-    lsl     r3, r3, #1          /* r3 = cpu.ICount * Z80_FREQ_DIVISOR (2) */
+    mov     r1, #Z80_FREQ_DIVISOR
+    mul     r3, r3, r1          /* r3 = cpu.ICount * Z80_FREQ_DIVISOR */
     sub     r0, r2, r3          /* r0 = timing parameter */
     
     bl      YM2612Read
@@ -152,7 +153,8 @@ WrZ80:
     
     ldr     r2, =cpu
     ldr     r6, [r2, #Z80_ICOUNT_OFFSET]  /* r6 = cpu.ICount */
-    lsl     r6, r6, #1          /* r6 = cpu.ICount * 2 */
+    mov     r2, #Z80_FREQ_DIVISOR
+    mul     r6, r6, r2          /* r6 = cpu.ICount * Z80_FREQ_DIVISOR */
     sub     r2, r3, r6          /* r2 = timing */
     
     bl      YM2612Write
