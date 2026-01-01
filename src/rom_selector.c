@@ -329,7 +329,7 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
     // Wait for input
     int prev_selected = -1;
     int prev_scroll = -1;
-    uint16_t prev_buttons = 0;  // Track previous button state
+    uint32_t prev_buttons = 0;  // Track previous button state
     
     // Wait a moment for display to settle
     sleep_ms(100);
@@ -344,7 +344,7 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
         
         // Read gamepad
         nespad_read();
-        uint16_t buttons = nespad_state;
+        uint32_t buttons = nespad_state;
         
 #ifdef USB_HID_ENABLED
         // Poll USB and merge USB gamepad state
@@ -371,7 +371,7 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
 #endif
         
         // Detect button press (transition from not pressed to pressed)
-        uint16_t buttons_pressed = buttons & ~prev_buttons;
+        uint32_t buttons_pressed = buttons & ~prev_buttons;
         prev_buttons = buttons;
         
         // Handle input (only on button press, not hold)
