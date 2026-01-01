@@ -10,6 +10,11 @@
 #include <string.h>
 #include <stdio.h>
 
+// USB HID gamepad support
+#ifdef USB_HID_ENABLED
+#include "usbhid/usbhid.h"
+#endif
+
 // Screen dimensions
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
@@ -340,6 +345,30 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
         // Read gamepad
         nespad_read();
         uint16_t buttons = nespad_state;
+        
+#ifdef USB_HID_ENABLED
+        // Poll USB and merge USB gamepad state
+        usbhid_task();
+        if (usbhid_gamepad_connected()) {
+            usbhid_gamepad_state_t gp;
+            usbhid_get_gamepad_state(&gp);
+            
+            // Merge USB gamepad D-pad with nespad buttons
+            if (gp.dpad & 0x01) buttons |= DPAD_UP;
+            if (gp.dpad & 0x02) buttons |= DPAD_DOWN;
+            if (gp.dpad & 0x04) buttons |= DPAD_LEFT;
+            if (gp.dpad & 0x08) buttons |= DPAD_RIGHT;
+            // Merge USB gamepad buttons (A=confirm, Start=confirm)
+            if (gp.buttons & 0x01) buttons |= DPAD_A;     // A button
+            if (gp.buttons & 0x02) buttons |= DPAD_B;     // B button
+            if (gp.buttons & 0x40) buttons |= DPAD_START; // Start button
+        } else {
+            static int not_conn = 0;
+            if ((not_conn++ % 100) == 0) {
+                printf("USB gamepad not connected\n");
+            }
+        }
+#endif
         
         // Detect button press (transition from not pressed to pressed)
         uint16_t buttons_pressed = buttons & ~prev_buttons;

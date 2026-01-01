@@ -40,6 +40,13 @@ static volatile int8_t cumulative_wheel = 0;
 static volatile uint8_t current_buttons = 0;
 static volatile int mouse_has_motion = 0;
 
+// Gamepad state
+static volatile int8_t gamepad_axis_x = 0;
+static volatile int8_t gamepad_axis_y = 0;
+static volatile uint8_t gamepad_dpad = 0;
+static volatile uint16_t gamepad_buttons = 0;
+static volatile int gamepad_connected = 0;
+
 // Device connection state
 static volatile int keyboard_connected = 0;
 static volatile int mouse_connected = 0;
@@ -78,6 +85,7 @@ static int find_keycode_in_report(hid_keyboard_report_t const *report, uint8_t k
 // Forward declarations
 static void process_kbd_report(hid_keyboard_report_t const *report, hid_keyboard_report_t const *prev_report);
 static void process_mouse_report(hid_mouse_report_t const *report);
+static void process_gamepad_report(uint8_t const *report, uint16_t len);
 static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t const *report, uint16_t len);
 
 //--------------------------------------------------------------------
@@ -147,13 +155,56 @@ static void process_mouse_report(hid_mouse_report_t const *report) {
 }
 
 //--------------------------------------------------------------------
+// Process gamepad report
+// Handles common USB gamepad formats (Xbox-style, generic HID)
+//--------------------------------------------------------------------
+
+static void process_gamepad_report(uint8_t const *report, uint16_t len) {
+    // Safety check
+    if (report == NULL || len < 7) return;
+    
+    // Format discovered:
+    // Byte 3: D-pad X (0x00=Left, 0x7F=center, 0xFF=Right)
+    // Byte 4: D-pad Y (0x00=Up, 0x7F=center, 0xFF=Down)
+    // Byte 5: A(0x20), B(0x40), X(0x10), Y(0x80)
+    // Byte 6: L-shift(0x01), R-shift(0x02), Select(0x10), Start(0x20)
+    
+    // D-pad from bytes 3-4
+    gamepad_dpad = 0;
+    if (report[3] < 0x40) gamepad_dpad |= 0x04; // Left
+    if (report[3] > 0xC0) gamepad_dpad |= 0x08; // Right
+    if (report[4] < 0x40) gamepad_dpad |= 0x01; // Up
+    if (report[4] > 0xC0) gamepad_dpad |= 0x02; // Down
+    
+    // Buttons
+    gamepad_buttons = 0;
+    if (report[5] & 0x20) gamepad_buttons |= 0x01; // A → Genesis A
+    if (report[5] & 0x40) gamepad_buttons |= 0x02; // B → Genesis B
+    if (report[5] & 0x80) gamepad_buttons |= 0x04; // Y → Genesis C
+    if (report[5] & 0x10) gamepad_buttons |= 0x08; // X → Genesis X
+    if (report[6] & 0x01) gamepad_buttons |= 0x10; // L-shift → Genesis Y
+    if (report[6] & 0x02) gamepad_buttons |= 0x20; // R-shift → Genesis Z
+    if (report[6] & 0x20) gamepad_buttons |= 0x40; // Start → Start
+    if (report[6] & 0x10) gamepad_buttons |= 0x80; // Select → Mode
+}
+
+//--------------------------------------------------------------------
 // Process generic HID report
 //--------------------------------------------------------------------
 
 static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t const *report, uint16_t len) {
     (void)dev_addr;
     
+    // Bounds check
+    if (instance >= CFG_TUH_HID || report == NULL || len == 0) {
+        return;
+    }
+    
     uint8_t const rpt_count = hid_info[instance].report_count;
+    if (rpt_count == 0 || rpt_count > MAX_REPORT) {
+        return;
+    }
+    
     tuh_hid_report_info_t *rpt_info_arr = hid_info[instance].report_info;
     tuh_hid_report_info_t *rpt_info = NULL;
     
@@ -163,7 +214,7 @@ static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t c
     } else {
         // Composite report, first byte is report ID
         uint8_t const rpt_id = report[0];
-        for (uint8_t i = 0; i < rpt_count; i++) {
+        for (uint8_t i = 0; i < rpt_count && i < MAX_REPORT; i++) {
             if (rpt_id == rpt_info_arr[i].report_id) {
                 rpt_info = &rpt_info_arr[i];
                 break;
@@ -185,6 +236,10 @@ static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t c
                 break;
             case HID_USAGE_DESKTOP_MOUSE:
                 process_mouse_report((hid_mouse_report_t const *)report);
+                break;
+            case HID_USAGE_DESKTOP_GAMEPAD:
+            case HID_USAGE_DESKTOP_JOYSTICK:
+                process_gamepad_report(report, len);
                 break;
             default:
                 break;
@@ -208,8 +263,27 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
     
     // Parse generic report descriptor
     if (itf_protocol == HID_ITF_PROTOCOL_NONE) {
+        // Bounds check instance
+        if (instance >= CFG_TUH_HID) {
+            // Instance out of range, skip parsing
+            if (!tuh_hid_receive_report(dev_addr, instance)) {
+                // Failed to request report
+            }
+            return;
+        }
+        
         hid_info[instance].report_count = tuh_hid_parse_report_descriptor(
             hid_info[instance].report_info, MAX_REPORT, desc_report, desc_len);
+        
+        // Check if it's a gamepad/joystick
+        for (uint8_t i = 0; i < hid_info[instance].report_count && i < MAX_REPORT; i++) {
+            if (hid_info[instance].report_info[i].usage_page == HID_USAGE_PAGE_DESKTOP) {
+                uint8_t usage = hid_info[instance].report_info[i].usage;
+                if (usage == HID_USAGE_DESKTOP_GAMEPAD || usage == HID_USAGE_DESKTOP_JOYSTICK) {
+                    gamepad_connected = 1;
+                }
+            }
+        }
     }
     
     // Request to receive reports
@@ -226,6 +300,13 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
         keyboard_connected = 0;
     } else if (itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
         mouse_connected = 0;
+    } else if (itf_protocol == HID_ITF_PROTOCOL_NONE) {
+        // Could be a gamepad
+        gamepad_connected = 0;
+        gamepad_buttons = 0;
+        gamepad_dpad = 0;
+        gamepad_axis_x = 128;
+        gamepad_axis_y = 128;
     }
 }
 
@@ -235,16 +316,25 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
     
     switch (itf_protocol) {
         case HID_ITF_PROTOCOL_KEYBOARD:
-            process_kbd_report((hid_keyboard_report_t const *)report, &prev_kbd_report);
-            prev_kbd_report = *(hid_keyboard_report_t const *)report;
+            if (report && len >= sizeof(hid_keyboard_report_t)) {
+                process_kbd_report((hid_keyboard_report_t const *)report, &prev_kbd_report);
+                prev_kbd_report = *(hid_keyboard_report_t const *)report;
+            }
             break;
         
         case HID_ITF_PROTOCOL_MOUSE:
-            process_mouse_report((hid_mouse_report_t const *)report);
+            if (report && len >= sizeof(hid_mouse_report_t)) {
+                process_mouse_report((hid_mouse_report_t const *)report);
+            }
             break;
         
         default:
-            process_generic_report(dev_addr, instance, report, len);
+            // Generic device (gamepad/joystick) - simple direct parsing
+            // Skip complex report descriptor parsing, just read raw data
+            if (report && len >= 2) {
+                gamepad_connected = 1;
+                process_gamepad_report(report, len);
+            }
             break;
     }
     
@@ -320,6 +410,21 @@ int usbhid_get_key_action(uint8_t *keycode, int *down) {
     *down = key_action_queue[key_action_tail].down;
     key_action_tail = (key_action_tail + 1) % KEY_ACTION_QUEUE_SIZE;
     return 1;
+}
+
+// Gamepad API functions
+int usbhid_gamepad_connected(void) {
+    return gamepad_connected;
+}
+
+void usbhid_get_gamepad_state(usbhid_gamepad_state_t *state) {
+    if (state) {
+        state->axis_x = gamepad_axis_x;
+        state->axis_y = gamepad_axis_y;
+        state->dpad = gamepad_dpad;
+        state->buttons = gamepad_buttons;
+        state->connected = gamepad_connected;
+    }
 }
 
 #endif // CFG_TUH_ENABLED

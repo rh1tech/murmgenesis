@@ -44,6 +44,11 @@
 // Gamepad driver
 #include "nespad/nespad.h"
 
+// USB HID (gamepad support) - build with USB_HID_ENABLED=1 ./build.sh
+#ifdef USB_HID_ENABLED
+#include "usbhid/usbhid.h"
+#endif
+
 // ROM selector
 #include "rom_selector.h"
 
@@ -573,6 +578,11 @@ static void __time_critical_func(emulation_loop)(void) {
         
         PROFILE_FRAME_END();
         
+#ifdef USB_HID_ENABLED
+        // Poll USB HID Host for gamepad events
+        usbhid_task();
+#endif
+        
         // Print profiling stats every 300 frames (~5 seconds at 60fps)
         if ((frame_counter % 300) == 0) {
             print_profiling_stats();
@@ -596,10 +606,16 @@ int main(void) {
     
     stdio_init_all();
     
+#ifdef USB_HID_ENABLED
+    // Initialize USB HID Host (for USB gamepad support)
+    usbhid_init();
+    LOG("USB HID Host initialized\n");
+#else
     // Startup delay for USB serial console (4 seconds)
     for (int i = 0; i < 8; i++) {
         sleep_ms(500);
     }
+#endif
     
     LOG("\n\n");
     LOG("========================================\n");
@@ -747,6 +763,29 @@ void gwenesis_io_get_buttons(void) {
     // Read gamepad state
     nespad_read();
     
+    // Debug: track button presses for player 1
+    static uint32_t prev_nespad_state = 0;
+    uint32_t pressed = nespad_state & ~prev_nespad_state;  // Newly pressed buttons
+    
+    if (pressed) {
+        printf("P1 Raw state: 0x%08lX | Pressed: 0x%08lX | ", 
+               (unsigned long)nespad_state, (unsigned long)pressed);
+        if (pressed & DPAD_UP)     printf("UP ");
+        if (pressed & DPAD_DOWN)   printf("DOWN ");
+        if (pressed & DPAD_LEFT)   printf("LEFT ");
+        if (pressed & DPAD_RIGHT)  printf("RIGHT ");
+        if (pressed & DPAD_SELECT) printf("SELECT ");
+        if (pressed & DPAD_START)  printf("START ");
+        if (pressed & DPAD_A)      printf("A(NES-A/SNES-B) ");
+        if (pressed & DPAD_B)      printf("B(NES-B/SNES-Y) ");
+        if (pressed & DPAD_Y)      printf("Y(SNES-A) ");
+        if (pressed & DPAD_X)      printf("X(SNES-X) ");
+        if (pressed & DPAD_LT)     printf("L ");
+        if (pressed & DPAD_RT)     printf("R ");
+        printf("\n");
+    }
+    prev_nespad_state = nespad_state;
+    
     // Check for SELECT+START combo to return to ROM selector
     if ((nespad_state & DPAD_SELECT) && (nespad_state & DPAD_START)) {
         // Trigger watchdog reset to restart and show ROM selector
@@ -868,5 +907,32 @@ void gwenesis_io_get_buttons(void) {
     // No gamepad - all buttons released
     button_state[0] = 0xFF;
     button_state[1] = 0xFF;
+#endif
+
+#ifdef USB_HID_ENABLED
+    // Also check USB gamepad (overrides/combines with NES/SNES pad)
+    if (usbhid_gamepad_connected()) {
+        usbhid_gamepad_state_t gp;
+        usbhid_get_gamepad_state(&gp);
+        
+        // D-pad from USB gamepad
+        if (gp.dpad & 0x01) button_state[0] &= ~(1 << 0); // Up
+        if (gp.dpad & 0x02) button_state[0] &= ~(1 << 1); // Down
+        if (gp.dpad & 0x04) button_state[0] &= ~(1 << 2); // Left
+        if (gp.dpad & 0x08) button_state[0] &= ~(1 << 3); // Right
+        
+        // Buttons from USB gamepad (mapped in process_gamepad_report)
+        // bit 0=A, 1=B, 2=C, 3=X, 4=Y, 5=Z, 6=Start, 7=Select/Mode
+        if (gp.buttons & 0x01) button_state[0] &= ~(1 << 6); // A → Genesis A
+        if (gp.buttons & 0x02) button_state[0] &= ~(1 << 4); // B → Genesis B
+        if (gp.buttons & 0x04) button_state[0] &= ~(1 << 5); // C → Genesis C
+        if (gp.buttons & 0x40) button_state[0] &= ~(1 << 7); // Start → Genesis Start
+        
+        // SELECT+START combo for USB gamepad too
+        if ((gp.buttons & 0x40) && (gp.buttons & 0x80)) {
+            watchdog_reboot(0, 0, 10);
+            while(1) tight_loop_contents();
+        }
+    }
 #endif
 }

@@ -196,8 +196,20 @@ target_link_libraries(murmgenesis
     nespad
 )
 
-# Use USB for stdio output
-pico_enable_stdio_usb(murmgenesis 1)
-pico_enable_stdio_uart(murmgenesis 0)
+# USB configuration: stdio vs HID Host (mutually exclusive)
+if(USB_HID_ENABLED)
+    # USB HID Host mode - disable USB stdio, use UART instead
+    pico_enable_stdio_usb(murmgenesis 0)
+    pico_enable_stdio_uart(murmgenesis 1)
+    message(STATUS "USB HID Host enabled - using UART for stdio")
+    
+    # Add USB HID driver
+    add_subdirectory(drivers/usbhid)
+    target_link_libraries(murmgenesis usbhid)
+else()
+    # USB Device mode for stdio
+    pico_enable_stdio_usb(murmgenesis 1)
+    pico_enable_stdio_uart(murmgenesis 0)
+endif()
 
 pico_add_extra_outputs(murmgenesis)

@@ -34,6 +34,15 @@ typedef struct {
     int has_motion;         // Non-zero if motion/button change occurred
 } usbhid_mouse_state_t;
 
+// USB gamepad state (normalized to Genesis-style mapping)
+typedef struct {
+    int8_t axis_x;          // Left stick X: -127 to 127
+    int8_t axis_y;          // Left stick Y: -127 to 127
+    uint8_t dpad;           // D-pad: bit 0=up, 1=down, 2=left, 3=right
+    uint16_t buttons;       // Buttons: bit 0=A, 1=B, 2=C, 3=X, 4=Y, 5=Z, 6=Start, 7=Select/Mode
+    int connected;          // Non-zero if gamepad is connected
+} usbhid_gamepad_state_t;
+
 //--------------------------------------------------------------------
 // API Functions
 //--------------------------------------------------------------------
@@ -81,6 +90,18 @@ void usbhid_get_mouse_state(usbhid_mouse_state_t *state);
  * @return Non-zero if action available
  */
 int usbhid_get_key_action(uint8_t *keycode, int *down);
+
+/**
+ * Check if a USB gamepad is connected
+ * @return Non-zero if gamepad connected
+ */
+int usbhid_gamepad_connected(void);
+
+/**
+ * Get current gamepad state
+ * @param state Pointer to state structure to fill
+ */
+void usbhid_get_gamepad_state(usbhid_gamepad_state_t *state);
 
 #ifdef __cplusplus
 }

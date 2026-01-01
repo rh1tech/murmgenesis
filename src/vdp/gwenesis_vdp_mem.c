@@ -896,8 +896,8 @@ void gwenesis_vdp_write_memory_16(unsigned int address, unsigned int value) {
             gwenesis_SN76489_Write(value, m68k_cycles_master());
         return;
     }
-    // UNHANDLED
-    printf("unhandled gwenesis_vdp_write(%x, %x)\n", address, value);
+    // UNHANDLED - disabled spam
+    // printf("unhandled gwenesis_vdp_write(%x, %x)\n", address, value);
 }
 
 void gwenesis_vdp_mem_save_state() {
