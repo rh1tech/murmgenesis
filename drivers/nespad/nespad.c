@@ -1,6 +1,7 @@
 #include "nespad.h"
 #include "hardware/pio.h"
 #include "hardware/gpio.h"
+#include <stdio.h>
 
 #define nespad_wrap_target 0
 #define nespad_wrap 6
@@ -79,6 +80,16 @@ void nespad_read() {
     // Right-shift was used in sm config so bit order matches NES controller
     uint32_t temp = pio->rxf[sm] ^ 0xFFFFFFFF;
     pio->txf[sm] = 0;
+    
+    // Debug: show full 32-bit raw and masked values
+    static uint32_t prev_raw = 0;
+    if (temp != prev_raw && temp != 0) {
+        uint32_t joy1 = temp & 0x555555;
+        printf("RAW32: 0x%08lX  Joy1: 0x%06lX  (upper: 0x%02lX)\n", 
+               temp, joy1, (temp >> 16) & 0xFFFF);
+        prev_raw = temp;
+    }
+    
     nespad_state = temp & 0x555555;        // Joy1
     nespad_state2 = temp >> 1 & 0x555555;  // Joy2
 }

@@ -255,17 +255,24 @@ static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t c
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_report, uint16_t desc_len) {
     uint8_t const itf_protocol = tuh_hid_interface_protocol(dev_addr, instance);
     
+    printf("USB HID mounted: dev_addr=%d, instance=%d, protocol=%d\n", dev_addr, instance, itf_protocol);
+    
     if (itf_protocol == HID_ITF_PROTOCOL_KEYBOARD) {
         keyboard_connected = 1;
+        printf("  -> Keyboard detected\n");
     } else if (itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
         mouse_connected = 1;
+        printf("  -> Mouse detected\n");
     }
     
     // Parse generic report descriptor
     if (itf_protocol == HID_ITF_PROTOCOL_NONE) {
+        printf("  -> Generic HID device (protocol=NONE)\n");
+        
         // Bounds check instance
         if (instance >= CFG_TUH_HID) {
             // Instance out of range, skip parsing
+            printf("  -> Instance %d out of range (max %d)\n", instance, CFG_TUH_HID);
             if (!tuh_hid_receive_report(dev_addr, instance)) {
                 // Failed to request report
             }
@@ -275,14 +282,27 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
         hid_info[instance].report_count = tuh_hid_parse_report_descriptor(
             hid_info[instance].report_info, MAX_REPORT, desc_report, desc_len);
         
+        printf("  -> Parsed %d reports from descriptor\n", hid_info[instance].report_count);
+        
         // Check if it's a gamepad/joystick
         for (uint8_t i = 0; i < hid_info[instance].report_count && i < MAX_REPORT; i++) {
+            printf("  -> Report %d: usage_page=0x%02X, usage=0x%02X\n", 
+                   i, hid_info[instance].report_info[i].usage_page,
+                   hid_info[instance].report_info[i].usage);
             if (hid_info[instance].report_info[i].usage_page == HID_USAGE_PAGE_DESKTOP) {
                 uint8_t usage = hid_info[instance].report_info[i].usage;
                 if (usage == HID_USAGE_DESKTOP_GAMEPAD || usage == HID_USAGE_DESKTOP_JOYSTICK) {
                     gamepad_connected = 1;
+                    printf("  -> GAMEPAD/JOYSTICK connected!\n");
                 }
             }
+        }
+        
+        // If no gamepad detected from descriptor, assume it's a gamepad anyway
+        // Many cheap gamepads don't report usage correctly
+        if (!gamepad_connected && hid_info[instance].report_count == 0) {
+            printf("  -> No reports parsed, assuming gamepad\n");
+            gamepad_connected = 1;
         }
     }
     
@@ -302,6 +322,7 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
         mouse_connected = 0;
     } else if (itf_protocol == HID_ITF_PROTOCOL_NONE) {
         // Could be a gamepad
+        printf("USB HID unmounted: gamepad disconnected\n");
         gamepad_connected = 0;
         gamepad_buttons = 0;
         gamepad_dpad = 0;
@@ -309,6 +330,9 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
         gamepad_axis_y = 128;
     }
 }
+
+// Debug counter for report received
+static int report_debug_counter = 0;
 
 // Invoked when report is received
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *report, uint16_t len) {
@@ -332,6 +356,15 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
             // Generic device (gamepad/joystick) - simple direct parsing
             // Skip complex report descriptor parsing, just read raw data
             if (report && len >= 2) {
+                // Print first few reports for debugging
+                if (report_debug_counter < 5) {
+                    printf("Gamepad report (len=%d): ", len);
+                    for (int i = 0; i < len && i < 16; i++) {
+                        printf("%02X ", report[i]);
+                    }
+                    printf("\n");
+                    report_debug_counter++;
+                }
                 gamepad_connected = 1;
                 process_gamepad_report(report, len);
             }
