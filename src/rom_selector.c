@@ -6,9 +6,15 @@
 #include "ff.h"
 #include "pico/stdlib.h"
 #include "HDMI.h"
+#include "board_config.h"
+#include "hardware/clocks.h"
 #include "nespad/nespad.h"
 #include <string.h>
 #include <stdio.h>
+
+#ifndef MURMGENESIS_VERSION
+#define MURMGENESIS_VERSION "?"
+#endif
 
 // USB HID gamepad support
 #ifdef USB_HID_ENABLED
@@ -33,14 +39,99 @@ static int rom_count = 0;
 #define FONT_WIDTH 6    // 5px glyph + 1px spacing
 #define FONT_HEIGHT 7
 #define LINE_HEIGHT 10
-#define VISIBLE_LINES 16  // Number of ROM entries visible at once
+#define VISIBLE_LINES 13  // Fit two more entries while keeping bottom text visible
+#define HEADER_Y 16
+#define HEADER_HEIGHT 36
 #define MENU_X 24
-#define MENU_Y 80
-#define MENU_WIDTH (SCREEN_WIDTH - 48)
+#define MENU_Y 60   // Slightly tighter spacing under header
+#define MAX_ROM_NAME_CHARS 40  // Max characters for ROM name display (reduced for scrollbar gap)
 #define SCROLLBAR_WIDTH 4
-#define SCROLLBAR_X (SCREEN_WIDTH - 32)
+#define SCROLLBAR_X (SCREEN_WIDTH - 24)
 #define SCROLLBAR_Y MENU_Y
 #define SCROLLBAR_HEIGHT (VISIBLE_LINES * LINE_HEIGHT)
+#define MENU_WIDTH (SCROLLBAR_X - MENU_X - 8)  // Gap before scrollbar
+
+#define DOS_FONT_WIDTH 8
+#define DOS_FONT_HEIGHT 8
+#define DOS_FONT_ADVANCE 8
+#define DOS_LINE_HEIGHT 10
+#define FOOTER_Y (SCREEN_HEIGHT - (DOS_FONT_HEIGHT + 4))
+#define INFO_BASE_Y (FOOTER_Y - DOS_LINE_HEIGHT)  // Just above footer
+#define HELP_Y (INFO_BASE_Y - DOS_LINE_HEIGHT)  // Above info text
+
+// Colors for UI elements (8-bit 3-3-2 RGB palette)
+#define COLOR_WHITE 63   // 0b00111111 - bright white
+#define COLOR_GRAY 42    // 0b00101010 - medium gray
+#define COLOR_YELLOW 252 // 0b11111100 - yellow (red + green)
+#define COLOR_RED 224    // 0b11100000 - red
+
+// Smooth scrollbar animation
+static int scrollbar_current_y = 0;  // Current animated position
+static int scrollbar_target_y = 0;   // Target position
+
+// Smooth cursor animation
+static int cursor_current_y = 0;  // Current animated highlight Y position
+static int cursor_target_y = 0;   // Target highlight Y position
+
+// Forward declarations
+static void draw_text_dos(uint8_t *screen, int x, int y, const char *text, uint8_t color);
+
+// Bold 7x9 font for title (wider strokes)
+#define BOLD_FONT_WIDTH 8   // 7px glyph + 1px spacing  
+#define BOLD_FONT_HEIGHT 9
+
+static const uint8_t *glyph_bold(char ch) {
+    // 7-pixel wide, 9-pixel tall bold glyphs
+    static const uint8_t glyph_space[9] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t glyph_M[9] = {0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x63, 0x63};
+    static const uint8_t glyph_U[9] = {0x63, 0x63, 0x63, 0x63, 0x63, 0x63, 0x63, 0x77, 0x3E};
+    static const uint8_t glyph_R[9] = {0x7E, 0x63, 0x63, 0x63, 0x7E, 0x6C, 0x66, 0x63, 0x63};
+    static const uint8_t glyph_G[9] = {0x3E, 0x63, 0x60, 0x60, 0x6F, 0x63, 0x63, 0x63, 0x3E};
+    static const uint8_t glyph_E[9] = {0x7F, 0x60, 0x60, 0x60, 0x7E, 0x60, 0x60, 0x60, 0x7F};
+    static const uint8_t glyph_N[9] = {0x63, 0x73, 0x7B, 0x7F, 0x6F, 0x67, 0x63, 0x63, 0x63};
+    static const uint8_t glyph_S[9] = {0x3E, 0x63, 0x60, 0x70, 0x3E, 0x07, 0x03, 0x63, 0x3E};
+    static const uint8_t glyph_I[9] = {0x3E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x3E};
+
+    int c = (unsigned char)ch;
+    if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+    
+    switch (c) {
+        case 'M': return glyph_M;
+        case 'U': return glyph_U;
+        case 'R': return glyph_R;
+        case 'G': return glyph_G;
+        case 'E': return glyph_E;
+        case 'N': return glyph_N;
+        case 'S': return glyph_S;
+        case 'I': return glyph_I;
+        default: return glyph_space;
+    }
+}
+
+// Draw bold character
+static void draw_char_bold(uint8_t *screen, int x, int y, char ch, uint8_t color) {
+    const uint8_t *rows = glyph_bold(ch);
+    for (int row = 0; row < BOLD_FONT_HEIGHT; ++row) {
+        int yy = y + row;
+        if (yy < 0 || yy >= SCREEN_HEIGHT) continue;
+        uint8_t bits = rows[row];
+        for (int col = 0; col < 7; ++col) {
+            int xx = x + col;
+            if (xx < 0 || xx >= SCREEN_WIDTH) continue;
+            if (bits & (1u << (6 - col))) {
+                screen[yy * SCREEN_WIDTH + xx] = color;
+            }
+        }
+    }
+}
+
+// Draw bold text string
+static void draw_text_bold(uint8_t *screen, int x, int y, const char *text, uint8_t color) {
+    for (const char *p = text; *p; ++p) {
+        draw_char_bold(screen, x, y, *p, color);
+        x += BOLD_FONT_WIDTH;
+    }
+}
 
 // 5x7 font glyphs (from murmdoom)
 static const uint8_t *glyph_5x7(char ch) {
@@ -49,6 +140,10 @@ static const uint8_t *glyph_5x7(char ch) {
     static const uint8_t glyph_hyphen[7] = {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00};
     static const uint8_t glyph_underscore[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F};
     static const uint8_t glyph_colon[7] = {0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00};
+    static const uint8_t glyph_slash[7] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00};
+    static const uint8_t glyph_comma[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x04};
+    static const uint8_t glyph_lparen[7] = {0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02};
+    static const uint8_t glyph_rparen[7] = {0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08};
     
     static const uint8_t glyph_0[7] = {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E};
     static const uint8_t glyph_1[7] = {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E};
@@ -98,6 +193,10 @@ static const uint8_t *glyph_5x7(char ch) {
         case '-': return glyph_hyphen;
         case '_': return glyph_underscore;
         case ':': return glyph_colon;
+        case '/': return glyph_slash;
+        case ',': return glyph_comma;
+        case '(': return glyph_lparen;
+        case ')': return glyph_rparen;
         case '0': return glyph_0;
         case '1': return glyph_1;
         case '2': return glyph_2;
@@ -177,6 +276,332 @@ static void fill_rect(uint8_t *screen, int x, int y, int w, int h, uint8_t color
     }
 }
 
+static void draw_demostyle_header(uint8_t *screen, uint32_t phase) {
+    // Calculate title dimensions first to exclude from animation
+    const char *title = "MURMGENESIS";
+    int title_width = (int)strlen(title) * BOLD_FONT_WIDTH;
+    int title_x = (SCREEN_WIDTH - title_width) / 2;
+    int title_y = HEADER_Y + (HEADER_HEIGHT - BOLD_FONT_HEIGHT) / 2;
+    int title_left = title_x - 8;
+    int title_right = title_x + title_width + 8;
+    int title_top = title_y - 5;
+    int title_bottom = title_y + BOLD_FONT_HEIGHT + 5;
+
+    // Draw animated background, but skip the title area
+    for (int y = 0; y < HEADER_HEIGHT; ++y) {
+        int yy = HEADER_Y + y;
+        if (yy < 0 || yy >= SCREEN_HEIGHT) continue;
+
+        uint8_t row_phase = (uint8_t)((phase + y * 5) & 0x3F);
+        for (int x = 0; x < SCREEN_WIDTH; ++x) {
+            // Skip title area
+            if (yy >= title_top && yy < title_bottom && x >= title_left && x < title_right) {
+                continue;
+            }
+            uint8_t wave = (uint8_t)(((x * 3) + phase) & 0x3F);
+            uint8_t color = (uint8_t)(8 + ((wave + (row_phase >> 1)) & 0x1F));
+            if (color > 63) color = 63;
+            screen[yy * SCREEN_WIDTH + x] = color;
+        }
+
+        // Horizontal stripes
+        if ((y & 3) == 0) {
+            uint8_t *row = &screen[yy * SCREEN_WIDTH];
+            for (int x = 0; x < SCREEN_WIDTH; ++x) {
+                if (yy >= title_top && yy < title_bottom && x >= title_left && x < title_right) continue;
+                if (row[x] <= 55) {
+                    row[x] = (uint8_t)(row[x] + 8);
+                } else {
+                    row[x] = 63;
+                }
+            }
+        }
+    }
+
+    // Diagonal stripes, skip title area
+    for (int offset = -HEADER_HEIGHT; offset < SCREEN_WIDTH; offset += 18) {
+        for (int y = 0; y < HEADER_HEIGHT; ++y) {
+            int yy = HEADER_Y + y;
+            int xx = offset + y;
+            if (yy < 0 || yy >= SCREEN_HEIGHT || xx < 0 || xx >= SCREEN_WIDTH) continue;
+            if (yy >= title_top && yy < title_bottom && xx >= title_left && xx < title_right) continue;
+
+            uint8_t *pixel = &screen[yy * SCREEN_WIDTH + xx];
+            if (*pixel <= 53) {
+                *pixel = (uint8_t)(*pixel + 10);
+            } else {
+                *pixel = 63;
+            }
+        }
+    }
+
+    // Draw solid background for title (drawn once, never animated)
+    fill_rect(screen, title_left, title_top, title_right - title_left, title_bottom - title_top, 0);
+
+    // Draw bold title with shadow
+    draw_text_bold(screen, title_x + 1, title_y + 1, title, 20);
+    draw_text_bold(screen, title_x, title_y, title, 63);
+}
+
+static void draw_info_text(uint8_t *screen) {
+    char info_str[64];
+
+    // Board label
+#ifdef BOARD_M2
+    const char *board_str = "M2";
+#else
+    const char *board_str = "M1";
+#endif
+
+    // Current system clock in MHz (rounded)
+    uint32_t sys_hz = clock_get_hz(clk_sys);
+    uint32_t cpu_mhz = (sys_hz + 500000) / 1000000;
+
+    // PSRAM clock: mirror psram_init divisor logic
+    const int max_psram_hz = PSRAM_MAX_FREQ_MHZ * 1000000;
+    int divisor = (int)((sys_hz + max_psram_hz - 1) / max_psram_hz);
+    if (divisor == 1 && sys_hz > 100000000) {
+        divisor = 2;
+    }
+    uint32_t psram_hz = sys_hz / (uint32_t)divisor;
+    uint32_t psram_mhz = (psram_hz + 500000) / 1000000;
+
+    snprintf(info_str, sizeof(info_str), "V.%s %s %u MHZ/%u MHZ", MURMGENESIS_VERSION, board_str, cpu_mhz, psram_mhz);
+
+    // Center with DOS font metrics
+    int text_width = (int)(strlen(info_str) * DOS_FONT_ADVANCE);
+    int x = (SCREEN_WIDTH - text_width) / 2;
+    if (x < 0) x = 0;
+
+    // Place one medium line above the help text
+    int info_y = INFO_BASE_Y - DOS_LINE_HEIGHT;
+    if (info_y < 0) info_y = 0;
+
+    draw_text_dos(screen, x, info_y, info_str, COLOR_WHITE);
+}
+
+static void draw_help_text(uint8_t *screen) {
+    const char *help = "UP/DOWN: SELECT   A/START: CONFIRM";
+    int text_width = (int)(strlen(help) * DOS_FONT_ADVANCE);
+    int x = (SCREEN_WIDTH - text_width) / 2;
+    if (x < 0) x = 0;
+    draw_text_dos(screen, x, INFO_BASE_Y, help, COLOR_WHITE);
+}
+
+// CP437 8x8 font: public domain VGA bitmaps (basic Latin + core block/line glyphs we use)
+static const uint8_t font8x8_basic[128][8] = {
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00},
+    { 0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x36, 0x36, 0x7F, 0x36, 0x7F, 0x36, 0x36, 0x00},
+    { 0x0C, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x0C, 0x00},
+    { 0x00, 0x63, 0x33, 0x18, 0x0C, 0x66, 0x63, 0x00},
+    { 0x1C, 0x36, 0x1C, 0x6E, 0x3B, 0x33, 0x6E, 0x00},
+    { 0x06, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x18, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x18, 0x00},
+    { 0x06, 0x0C, 0x18, 0x18, 0x18, 0x0C, 0x06, 0x00},
+    { 0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00},
+    { 0x00, 0x0C, 0x0C, 0x3F, 0x0C, 0x0C, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x06},
+    { 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x00},
+    { 0x60, 0x30, 0x18, 0x0C, 0x06, 0x03, 0x01, 0x00},
+    { 0x3E, 0x63, 0x73, 0x7B, 0x6F, 0x67, 0x3E, 0x00},
+    { 0x0C, 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x3F, 0x00},
+    { 0x1E, 0x33, 0x30, 0x1C, 0x06, 0x33, 0x3F, 0x00},
+    { 0x1E, 0x33, 0x30, 0x1C, 0x30, 0x33, 0x1E, 0x00},
+    { 0x38, 0x3C, 0x36, 0x33, 0x7F, 0x30, 0x78, 0x00},
+    { 0x3F, 0x03, 0x1F, 0x30, 0x30, 0x33, 0x1E, 0x00},
+    { 0x1C, 0x06, 0x03, 0x1F, 0x33, 0x33, 0x1E, 0x00},
+    { 0x3F, 0x33, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x00},
+    { 0x1E, 0x33, 0x33, 0x1E, 0x33, 0x33, 0x1E, 0x00},
+    { 0x1E, 0x33, 0x33, 0x3E, 0x30, 0x18, 0x0E, 0x00},
+    { 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x00},
+    { 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x06},
+    { 0x18, 0x0C, 0x06, 0x03, 0x06, 0x0C, 0x18, 0x00},
+    { 0x00, 0x00, 0x3F, 0x00, 0x00, 0x3F, 0x00, 0x00},
+    { 0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00},
+    { 0x1E, 0x33, 0x30, 0x18, 0x0C, 0x00, 0x0C, 0x00},
+    { 0x3E, 0x63, 0x7B, 0x7B, 0x7B, 0x03, 0x1E, 0x00},
+    { 0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00},
+    { 0x3F, 0x66, 0x66, 0x3E, 0x66, 0x66, 0x3F, 0x00},
+    { 0x3C, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3C, 0x00},
+    { 0x1F, 0x36, 0x66, 0x66, 0x66, 0x36, 0x1F, 0x00},
+    { 0x7F, 0x46, 0x16, 0x1E, 0x16, 0x46, 0x7F, 0x00},
+    { 0x7F, 0x46, 0x16, 0x1E, 0x16, 0x06, 0x0F, 0x00},
+    { 0x3C, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7C, 0x00},
+    { 0x33, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x33, 0x00},
+    { 0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},
+    { 0x78, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E, 0x00},
+    { 0x67, 0x66, 0x36, 0x1E, 0x36, 0x66, 0x67, 0x00},
+    { 0x0F, 0x06, 0x06, 0x06, 0x46, 0x66, 0x7F, 0x00},
+    { 0x63, 0x77, 0x7F, 0x7F, 0x6B, 0x63, 0x63, 0x00},
+    { 0x63, 0x67, 0x6F, 0x7B, 0x73, 0x63, 0x63, 0x00},
+    { 0x1C, 0x36, 0x63, 0x63, 0x63, 0x36, 0x1C, 0x00},
+    { 0x3F, 0x66, 0x66, 0x3E, 0x06, 0x06, 0x0F, 0x00},
+    { 0x1E, 0x33, 0x33, 0x33, 0x3B, 0x1E, 0x38, 0x00},
+    { 0x3F, 0x66, 0x66, 0x3E, 0x36, 0x66, 0x67, 0x00},
+    { 0x1E, 0x33, 0x07, 0x0E, 0x38, 0x33, 0x1E, 0x00},
+    { 0x3F, 0x2D, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},
+    { 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x3F, 0x00},
+    { 0x33, 0x33, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00},
+    { 0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00},
+    { 0x63, 0x63, 0x36, 0x1C, 0x1C, 0x36, 0x63, 0x00},
+    { 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x0C, 0x1E, 0x00},
+    { 0x7F, 0x63, 0x31, 0x18, 0x4C, 0x66, 0x7F, 0x00},
+    { 0x1E, 0x06, 0x06, 0x06, 0x06, 0x06, 0x1E, 0x00},
+    { 0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00},
+    { 0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00},
+    { 0x08, 0x1C, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF},
+    { 0x0C, 0x0C, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x1E, 0x30, 0x3E, 0x33, 0x6E, 0x00},
+    { 0x07, 0x06, 0x06, 0x3E, 0x66, 0x66, 0x3B, 0x00},
+    { 0x00, 0x00, 0x1E, 0x33, 0x03, 0x33, 0x1E, 0x00},
+    { 0x38, 0x30, 0x30, 0x3e, 0x33, 0x33, 0x6E, 0x00},
+    { 0x00, 0x00, 0x1E, 0x33, 0x3f, 0x03, 0x1E, 0x00},
+    { 0x1C, 0x36, 0x06, 0x0f, 0x06, 0x06, 0x0F, 0x00},
+    { 0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x1F},
+    { 0x07, 0x06, 0x36, 0x6E, 0x66, 0x66, 0x67, 0x00},
+    { 0x0C, 0x00, 0x0E, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},
+    { 0x30, 0x00, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E},
+    { 0x07, 0x06, 0x66, 0x36, 0x1E, 0x36, 0x67, 0x00},
+    { 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},
+    { 0x00, 0x00, 0x33, 0x7F, 0x7F, 0x6B, 0x63, 0x00},
+    { 0x00, 0x00, 0x1F, 0x33, 0x33, 0x33, 0x33, 0x00},
+    { 0x00, 0x00, 0x1E, 0x33, 0x33, 0x33, 0x1E, 0x00},
+    { 0x00, 0x00, 0x3B, 0x66, 0x66, 0x3E, 0x06, 0x0F},
+    { 0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x78},
+    { 0x00, 0x00, 0x3B, 0x6E, 0x66, 0x06, 0x0F, 0x00},
+    { 0x00, 0x00, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x00},
+    { 0x08, 0x0C, 0x3E, 0x0C, 0x0C, 0x2C, 0x18, 0x00},
+    { 0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x6E, 0x00},
+    { 0x00, 0x00, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00},
+    { 0x00, 0x00, 0x63, 0x6B, 0x7F, 0x7F, 0x36, 0x00},
+    { 0x00, 0x00, 0x63, 0x36, 0x1C, 0x36, 0x63, 0x00},
+    { 0x00, 0x00, 0x33, 0x33, 0x33, 0x3E, 0x30, 0x1F},
+    { 0x00, 0x00, 0x3F, 0x19, 0x0C, 0x26, 0x3F, 0x00},
+    { 0x38, 0x0C, 0x0C, 0x07, 0x0C, 0x0C, 0x38, 0x00},
+    { 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00},
+    { 0x07, 0x0C, 0x0C, 0x38, 0x0C, 0x0C, 0x07, 0x00},
+    { 0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+};
+
+typedef struct {
+    uint8_t code;
+    uint8_t glyph[8];
+} cp437_ext_entry_t;
+
+static const cp437_ext_entry_t cp437_ext[] = {
+    {0xB0, {0x55, 0x00, 0xAA, 0x00, 0x55, 0x00, 0xAA, 0x00}}, // light shade ░
+    {0xB1, {0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA}}, // medium shade ▒
+    {0xB2, {0xFF, 0xAA, 0xFF, 0x55, 0xFF, 0xAA, 0xFF, 0x55}}, // dark shade ▓
+    {0xDB, {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}, // full block █
+    {0xDC, {0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF}}, // lower half ▄
+    {0xDF, {0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00}}, // upper half ▀
+    {0xC4, {0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00}}, // horizontal ─
+    {0xB3, {0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08}}, // vertical │
+    {0xDA, {0x00, 0x00, 0x00, 0x00, 0xF8, 0x08, 0x08, 0x08}}, // top-left corner ┌
+    {0xBF, {0x00, 0x00, 0x00, 0x0F, 0x08, 0x08, 0x08, 0x08}}, // top-right corner ┐
+    {0xC0, {0x08, 0x08, 0x08, 0x08, 0xF8, 0x00, 0x00, 0x00}}, // bottom-left └
+    {0xD9, {0x08, 0x08, 0x08, 0x08, 0x0F, 0x00, 0x00, 0x00}}, // bottom-right ┘
+    {0xC3, {0x08, 0x08, 0x08, 0x08, 0xF8, 0x08, 0x08, 0x08}}, // tee-right ├
+    {0xB4, {0x08, 0x08, 0x08, 0xF8, 0x08, 0x08, 0x08, 0x08}}, // tee-left ┤
+    {0xC2, {0x00, 0x00, 0x00, 0x00, 0xFF, 0x08, 0x08, 0x08}}, // tee-down ┬
+    {0xC1, {0x08, 0x08, 0x08, 0x08, 0xFF, 0x00, 0x00, 0x00}}, // tee-up ┴
+    {0xC5, {0x08, 0x08, 0x08, 0x08, 0xFF, 0x08, 0x08, 0x08}}, // cross ┼
+    {0xCD, {0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00}}, // double horizontal ═
+    {0xBA, {0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14}}, // double vertical ║
+    {0xC9, {0x00, 0x00, 0x00, 0xFC, 0x04, 0xF4, 0x14, 0x14}}, // double down-right ╔
+    {0xBB, {0x00, 0x00, 0x00, 0x1F, 0x10, 0x17, 0x14, 0x14}}, // double down-left ╗
+    {0xC8, {0x14, 0x14, 0x14, 0x14, 0xFC, 0x00, 0x00, 0x00}}, // double up-right ╚
+    {0xBC, {0x14, 0x14, 0x14, 0x17, 0x10, 0x1F, 0x00, 0x00}}, // double up-left ╝
+    {0xCC, {0x14, 0x14, 0x14, 0xF4, 0x04, 0xF4, 0x14, 0x14}}, // double tee-right ╠
+    {0xB9, {0x14, 0x14, 0x14, 0x17, 0x10, 0x17, 0x14, 0x14}}, // double tee-left ╣
+    {0xCB, {0x00, 0x00, 0x00, 0x00, 0xFF, 0x14, 0x14, 0x14}}, // double tee-down ╦
+    {0xCA, {0x14, 0x14, 0x14, 0x14, 0xFF, 0x00, 0x00, 0x00}}, // double tee-up ╩
+    {0xCE, {0x14, 0x14, 0x14, 0xF7, 0x00, 0xF7, 0x14, 0x14}}, // double cross ╬
+};
+
+static const uint8_t *glyph_cp437(uint8_t code) {
+    if (code < 128) {
+        return font8x8_basic[code];
+    }
+    for (size_t i = 0; i < sizeof(cp437_ext) / sizeof(cp437_ext[0]); i++) {
+        if (cp437_ext[i].code == code) return cp437_ext[i].glyph;
+    }
+    return font8x8_basic[0];
+}
+
+static void draw_char_dos(uint8_t *screen, int x, int y, char ch, uint8_t color) {
+    const uint8_t *glyph = glyph_cp437((uint8_t)ch);
+    for (int row = 0; row < DOS_FONT_HEIGHT; ++row) {
+        int yy = y + row;
+        if (yy < 0 || yy >= SCREEN_HEIGHT) continue;
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < DOS_FONT_WIDTH; ++col) {
+            int xx = x + col;
+            if (xx < 0 || xx >= SCREEN_WIDTH) continue;
+            // Font bitmaps store leftmost pixel in LSB; use forward order so glyphs aren't mirrored.
+            if (bits & (1u << col)) {
+                screen[yy * SCREEN_WIDTH + xx] = color;
+            }
+        }
+    }
+}
+
+static void draw_text_dos(uint8_t *screen, int x, int y, const char *text, uint8_t color) {
+    int cursor = x;
+    for (const char *p = text; *p; ++p) {
+        draw_char_dos(screen, cursor, y, *p, color);
+        cursor += DOS_FONT_ADVANCE;
+    }
+}
+
+static void draw_footer(uint8_t *screen) {
+    const char *footer = "CODED BY MIKHAIL MATVEEV";
+
+    int total_width = (int)(strlen(footer) * DOS_FONT_ADVANCE);
+    int x = (SCREEN_WIDTH - total_width) / 2;
+    if (x < 0) x = 0;
+
+    draw_text_dos(screen, x, FOOTER_Y, footer, COLOR_WHITE);
+}
+
+
 // Scan /genesis directory for ROM files
 static void scan_roms(void) {
     DIR dir;
@@ -229,53 +654,178 @@ static void scan_roms(void) {
     f_closedir(&dir);
 }
 
-// Draw scrollbar
-static void draw_scrollbar(uint8_t *screen, int scroll_offset) {
+// Draw scrollbar with smooth animation
+static void draw_scrollbar(uint8_t *screen, int scroll_offset, bool animate) {
     if (rom_count <= VISIBLE_LINES) return;  // No scrollbar needed
-    
-    // Clear scrollbar area
-    fill_rect(screen, SCROLLBAR_X, SCROLLBAR_Y, SCROLLBAR_WIDTH, SCROLLBAR_HEIGHT, 0);
     
     // Calculate scrollbar thumb position and size
     int thumb_height = (SCROLLBAR_HEIGHT * VISIBLE_LINES) / rom_count;
     if (thumb_height < 10) thumb_height = 10;  // Minimum thumb size
     
     int thumb_max_y = SCROLLBAR_HEIGHT - thumb_height;
-    int thumb_y = (thumb_max_y * scroll_offset) / (rom_count - VISIBLE_LINES);
+    scrollbar_target_y = (thumb_max_y * scroll_offset) / (rom_count - VISIBLE_LINES);
+    
+    // Smooth interpolation towards target
+    if (animate) {
+        int diff = scrollbar_target_y - scrollbar_current_y;
+        if (diff != 0) {
+            // Move 1/2 of the distance for faster animation
+            int step = diff / 2;
+            if (step == 0) step = (diff > 0) ? 1 : -1;
+            scrollbar_current_y += step;
+        }
+    } else {
+        scrollbar_current_y = scrollbar_target_y;
+    }
     
     // Draw scrollbar background (dark)
     fill_rect(screen, SCROLLBAR_X, SCROLLBAR_Y, SCROLLBAR_WIDTH, SCROLLBAR_HEIGHT, 16);
     
     // Draw scrollbar thumb (bright)
-    fill_rect(screen, SCROLLBAR_X, SCROLLBAR_Y + thumb_y, SCROLLBAR_WIDTH, thumb_height, 63);
+    fill_rect(screen, SCROLLBAR_X, SCROLLBAR_Y + scrollbar_current_y, SCROLLBAR_WIDTH, thumb_height, COLOR_WHITE);
 }
 
-// Render ROM menu with scrolling
-static void render_rom_menu(uint8_t *screen, int selected, int scroll_offset) {
-    // Clear menu area (including space for highlight border on left)
-    fill_rect(screen, MENU_X - 2, MENU_Y - 2, MENU_WIDTH + 4, (VISIBLE_LINES * LINE_HEIGHT) + 4, 0);
+// Check if cursor animation is in progress
+static bool cursor_animating(void) {
+    return cursor_current_y != cursor_target_y;
+}
+
+// Check if any animation is in progress
+static bool animation_in_progress(void) {
+    return cursor_animating() || (scrollbar_current_y != scrollbar_target_y);
+}
+
+// Track previous state for smart redraws
+static int prev_scroll_offset = -1;
+static int prev_cursor_y = -1;  // Previous cursor Y for dirty rect
+
+// Draw a single ROM row at a given Y position
+static void draw_single_row(uint8_t *screen, int row_idx, int scroll_offset, int cursor_y) {
+    int rom_idx = scroll_offset + row_idx;
+    if (rom_idx >= rom_count || row_idx < 0 || row_idx >= VISIBLE_LINES) return;
     
+    int text_y = MENU_Y + row_idx * LINE_HEIGHT;
+    int row_top = text_y - 1;  // +1px up offset
+    int row_bottom = row_top + LINE_HEIGHT;
+    
+    // Check if this row overlaps with the highlight bar
+    int cursor_top = cursor_y;
+    int cursor_bottom = cursor_y + LINE_HEIGHT;
+    bool overlaps_cursor = (row_bottom > cursor_top && row_top < cursor_bottom);
+    
+    // Clear row to black first
+    fill_rect(screen, MENU_X - 2, row_top, MENU_WIDTH, LINE_HEIGHT, 0);
+    
+    // Draw highlight if overlapping
+    if (overlaps_cursor) {
+        // Draw the portion of highlight that overlaps this row
+        int highlight_start = (cursor_top > row_top) ? cursor_top : row_top;
+        int highlight_end = (cursor_bottom < row_bottom) ? cursor_bottom : row_bottom;
+        fill_rect(screen, MENU_X - 2, highlight_start, MENU_WIDTH, highlight_end - highlight_start, 63);
+    }
+    
+    // Truncate long names with ellipsis
+    char display_name[MAX_ROM_NAME_CHARS + 4];
+    size_t name_len = strlen(rom_list[rom_idx].display_name);
+    if (name_len > MAX_ROM_NAME_CHARS) {
+        strncpy(display_name, rom_list[rom_idx].display_name, MAX_ROM_NAME_CHARS - 3);
+        display_name[MAX_ROM_NAME_CHARS - 3] = '\0';
+        strcat(display_name, "...");
+    } else {
+        strncpy(display_name, rom_list[rom_idx].display_name, MAX_ROM_NAME_CHARS);
+        display_name[MAX_ROM_NAME_CHARS] = '\0';
+    }
+    
+    // Draw text - black if overlapping highlight, white otherwise
+    draw_text(screen, MENU_X, text_y, display_name, overlaps_cursor ? 0 : 63);
+}
+
+// Render ROM menu with smooth pixel-based cursor sliding - dirty rect approach
+static void render_rom_menu(uint8_t *screen, int selected, int scroll_offset, bool selection_changed) {
     if (rom_count == 0) {
-        draw_text(screen, MENU_X, MENU_Y, "NO ROMS FOUND", 63);
+        if (selection_changed) {
+            fill_rect(screen, MENU_X - 2, MENU_Y - 2, MENU_WIDTH + 4, (VISIBLE_LINES * LINE_HEIGHT) + 4, 0);
+            draw_text(screen, MENU_X, MENU_Y, "NO ROMS FOUND", 63);
+        }
         return;
     }
     
-    // Draw visible ROM entries
-    for (int i = 0; i < VISIBLE_LINES && (scroll_offset + i) < rom_count; i++) {
-        int rom_idx = scroll_offset + i;
-        int y = MENU_Y + i * LINE_HEIGHT;
-        
-        if (rom_idx == selected) {
-            // Highlight selected ROM (white on black becomes black on white)
-            fill_rect(screen, MENU_X - 2, y - 1, MENU_WIDTH, LINE_HEIGHT - 1, 63);
-            draw_text(screen, MENU_X, y, rom_list[rom_idx].display_name, 0);
-        } else {
-            draw_text(screen, MENU_X, y, rom_list[rom_idx].display_name, 63);
-        }
+    int visible_idx = selected - scroll_offset;
+    
+    // Update cursor target (pixel Y position, +1px up)
+    cursor_target_y = MENU_Y - 1 + visible_idx * LINE_HEIGHT;
+    
+    // Check if cursor needs to animate
+    bool cursor_moved = (cursor_current_y != cursor_target_y);
+    
+    // Smooth cursor interpolation - move cursor towards target
+    if (cursor_moved) {
+        int diff = cursor_target_y - cursor_current_y;
+        // Move 1/3 of distance for smooth animation
+        int step = diff / 3;
+        if (step == 0) step = (diff > 0) ? 1 : -1;
+        cursor_current_y += step;
     }
     
-    // Draw scrollbar
-    draw_scrollbar(screen, scroll_offset);
+    // If scroll offset changed, do full redraw and snap cursor
+    if (scroll_offset != prev_scroll_offset) {
+        cursor_current_y = cursor_target_y;  // Snap cursor on scroll
+        prev_scroll_offset = scroll_offset;
+        prev_cursor_y = cursor_current_y;
+        
+        // Full redraw on scroll change
+        for (int i = 0; i < VISIBLE_LINES && (scroll_offset + i) < rom_count; i++) {
+            draw_single_row(screen, i, scroll_offset, cursor_current_y);
+        }
+        draw_scrollbar(screen, scroll_offset, true);
+        draw_help_text(screen);
+        draw_info_text(screen);
+        draw_footer(screen);
+        return;
+    }
+    
+    // If cursor hasn't moved at all, just update scrollbar if needed
+    if (!cursor_moved && prev_cursor_y == cursor_current_y) {
+        if (scrollbar_current_y != scrollbar_target_y) {
+            draw_scrollbar(screen, scroll_offset, true);
+        }
+        // Always refresh overlay text so info/help/footer stay visible
+        draw_help_text(screen);
+        draw_info_text(screen);
+        draw_footer(screen);
+        return;
+    }
+    
+    // Calculate which rows are affected by cursor movement (dirty rectangles)
+    int old_cursor_row_start = (prev_cursor_y - MENU_Y + 1) / LINE_HEIGHT;
+    int old_cursor_row_end = (prev_cursor_y + LINE_HEIGHT - MENU_Y + 1) / LINE_HEIGHT;
+    int new_cursor_row_start = (cursor_current_y - MENU_Y + 1) / LINE_HEIGHT;
+    int new_cursor_row_end = (cursor_current_y + LINE_HEIGHT - MENU_Y + 1) / LINE_HEIGHT;
+    
+    // Clamp to valid range
+    if (old_cursor_row_start < 0) old_cursor_row_start = 0;
+    if (old_cursor_row_end >= VISIBLE_LINES) old_cursor_row_end = VISIBLE_LINES - 1;
+    if (new_cursor_row_start < 0) new_cursor_row_start = 0;
+    if (new_cursor_row_end >= VISIBLE_LINES) new_cursor_row_end = VISIBLE_LINES - 1;
+    
+    // Find the range of rows that need redrawing
+    int min_row = (old_cursor_row_start < new_cursor_row_start) ? old_cursor_row_start : new_cursor_row_start;
+    int max_row = (old_cursor_row_end > new_cursor_row_end) ? old_cursor_row_end : new_cursor_row_end;
+    
+    // Only redraw the affected rows
+    for (int i = min_row; i <= max_row && (scroll_offset + i) < rom_count; i++) {
+        draw_single_row(screen, i, scroll_offset, cursor_current_y);
+    }
+    
+    prev_cursor_y = cursor_current_y;
+    
+    // Draw scrollbar with smooth animation
+    draw_scrollbar(screen, scroll_offset, true);
+
+    // Draw help, info and footer overlays
+    draw_help_text(screen);
+    draw_info_text(screen);
+    draw_footer(screen);
 }
 
 bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *screen_buffer) {
@@ -302,20 +852,19 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
     
     int selected = 0;
     int scroll_offset = 0;
-    
-    // Draw title
-    const char *title = "MURMGENESIS - SELECT ROM";
-    int title_x = (SCREEN_WIDTH - (strlen(title) * FONT_WIDTH)) / 2;
-    printf("ROM Selector: Drawing title at %d,%d\n", title_x, 20);
-    fill_rect(screen_buffer, title_x - 4, 20, strlen(title) * FONT_WIDTH + 8, FONT_HEIGHT + 4, 32);
-    draw_text(screen_buffer, title_x, 22, title, 0);
-    
-    // Draw instructions
-    draw_text(screen_buffer, MENU_X, MENU_Y - 24, "UP/DOWN: SELECT", 63);
-    draw_text(screen_buffer, MENU_X, MENU_Y - 14, "A/START: CONFIRM", 63);
-    
-    // Initial render
-    render_rom_menu(screen_buffer, selected, scroll_offset);
+    uint32_t header_phase = 0;
+
+    draw_demostyle_header(screen_buffer, header_phase);
+    draw_info_text(screen_buffer);
+
+    // Initial render - initialize animation positions
+    scrollbar_current_y = 0;
+    scrollbar_target_y = 0;
+    cursor_current_y = MENU_Y - 1;  // Initialize cursor position (-1 for +1px up offset)
+    cursor_target_y = MENU_Y - 1;
+    prev_scroll_offset = -1;
+    prev_cursor_y = cursor_current_y;
+    render_rom_menu(screen_buffer, selected, scroll_offset, true);
     
     printf("ROM Selector: Menu rendered, waiting for input...\n");
     
@@ -330,17 +879,26 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
     int prev_selected = -1;
     int prev_scroll = -1;
     uint32_t prev_buttons = 0;  // Track previous button state
+    uint32_t hold_counter = 0;  // For key repeat
+    const uint32_t REPEAT_DELAY = 10;  // Initial delay before repeat (10 * 50ms = 500ms)
+    const uint32_t REPEAT_RATE = 3;    // Repeat rate (3 * 50ms = 150ms)
     
     // Wait a moment for display to settle
     sleep_ms(100);
     
     while (true) {
-        // Only redraw if selection changed
-        if (selected != prev_selected || scroll_offset != prev_scroll) {
-            render_rom_menu(screen_buffer, selected, scroll_offset);
+        draw_demostyle_header(screen_buffer, header_phase);
+        header_phase = (header_phase + 2) & 0x3F;
+
+        // Track if selection changed for scroll offset updates
+        bool selection_changed = (selected != prev_selected || scroll_offset != prev_scroll);
+        if (selection_changed) {
             prev_selected = selected;
             prev_scroll = scroll_offset;
         }
+        
+        // Render menu (handles animation internally with smart partial redraws)
+        render_rom_menu(screen_buffer, selected, scroll_offset, selection_changed);
         
         // Read gamepad
         nespad_read();
@@ -372,10 +930,23 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
         
         // Detect button press (transition from not pressed to pressed)
         uint32_t buttons_pressed = buttons & ~prev_buttons;
+        
+        // Key repeat logic for up/down
+        bool up_repeat = false;
+        bool down_repeat = false;
+        if (buttons & (DPAD_UP | DPAD_DOWN)) {
+            hold_counter++;
+            if (hold_counter > REPEAT_DELAY && ((hold_counter - REPEAT_DELAY) % REPEAT_RATE == 0)) {
+                if (buttons & DPAD_UP) up_repeat = true;
+                if (buttons & DPAD_DOWN) down_repeat = true;
+            }
+        } else {
+            hold_counter = 0;
+        }
         prev_buttons = buttons;
         
-        // Handle input (only on button press, not hold)
-        if (buttons_pressed & DPAD_UP) {
+        // Handle input (on button press or repeat)
+        if ((buttons_pressed & DPAD_UP) || up_repeat) {
             selected--;
             if (selected < 0) {
                 selected = rom_count - 1;  // Wrap to last
@@ -385,7 +956,7 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
             }
         }
         
-        if (buttons_pressed & DPAD_DOWN) {
+        if ((buttons_pressed & DPAD_DOWN) || down_repeat) {
             selected++;
             if (selected >= rom_count) {
                 selected = 0;  // Wrap to first
@@ -403,7 +974,7 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
             }
         }
         
-        sleep_ms(50);  // Update rate
+        sleep_ms(animation_in_progress() ? 16 : 50);  // Faster rate during animation (60fps vs 20fps)
     }
     
     return false;
