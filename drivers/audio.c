@@ -1,13 +1,18 @@
 /*
- * murmgenesis - Audio driver for RP2350
- * Uses pico_audio_i2s for I2S output
- * Based on murmdoom approach
+ * murmgenesis - Simple I2S Audio Driver
  * 
- * Simple direct mixing - no ring buffer to avoid HDMI conflicts
+ * Architecture (matching pico-megadrive):
+ * - Single DMA buffer
+ * - Wait for DMA completion, copy new samples, start DMA
+ * - Called once per frame from emulation loop
+ * 
+ * The key insight: DMA playback time = frame time (888 samples @ 53267 Hz = 16.67ms)
+ * So blocking on DMA naturally provides 60Hz timing.
  */
 
 #include "audio.h"
 #include "board_config.h"
+#include "audio_i2s.pio.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -15,66 +20,159 @@
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 #include "hardware/dma.h"
-#include "hardware/irq.h"
-
-// Redefine 'none' to avoid conflict with pico_audio enum
-#define none pico_audio_enum_none
-#include "pico/audio_i2s.h"
-#undef none
+#include "hardware/clocks.h"
 
 // Genesis sound chip headers
 #include "sound/ym2612.h"
 #include "sound/gwenesis_sn76489.h"
 
 //=============================================================================
-// Configuration
+// State - Single buffer, simple DMA
 //=============================================================================
 
-// I2S configuration - use PIO 0 to avoid conflicts with HDMI on PIO 1
-#ifndef PICO_AUDIO_I2S_PIO
-#define PICO_AUDIO_I2S_PIO 0
-#endif
-
-#ifndef PICO_AUDIO_I2S_DMA_IRQ
-#define PICO_AUDIO_I2S_DMA_IRQ 1
-#endif
-
-#ifndef PICO_AUDIO_I2S_DMA_CHANNEL
-#define PICO_AUDIO_I2S_DMA_CHANNEL 6
-#endif
-
-#ifndef PICO_AUDIO_I2S_STATE_MACHINE
-#define PICO_AUDIO_I2S_STATE_MACHINE 0
-#endif
-
-// Increase I2S drive strength for cleaner signal
-#define INCREASE_I2S_DRIVE_STRENGTH 1
+static uint32_t *dma_buffer = NULL;  // Single DMA buffer (32-bit words = stereo samples)
+static int dma_channel = -1;
+static PIO audio_pio;
+static uint audio_sm;
+static uint32_t dma_transfer_count;
+static bool dma_active = false;
 
 //=============================================================================
-// State
+// I2S Implementation
+//=============================================================================
+
+i2s_config_t i2s_get_default_config(void) {
+    i2s_config_t config = {
+        .sample_freq = AUDIO_SAMPLE_RATE,
+        .channel_count = 2,
+        .data_pin = I2S_DATA_PIN,
+        .clock_pin_base = I2S_CLOCK_PIN_BASE,
+        .pio = pio0,
+        .sm = 0,
+        .dma_channel = 0,
+        .dma_trans_count = AUDIO_BUFFER_SAMPLES,
+        .dma_buf = NULL,
+        .volume = 0,
+    };
+    return config;
+}
+
+void i2s_init(i2s_config_t *config) {
+    printf("Audio: Initializing I2S...\n");
+    printf("Audio: Sample rate: %lu Hz, Buffer: %lu samples\n", 
+           config->sample_freq, config->dma_trans_count);
+    
+    audio_pio = config->pio;
+    dma_transfer_count = config->dma_trans_count;
+    
+    // Configure GPIO for PIO
+    gpio_set_function(config->data_pin, GPIO_FUNC_PIO0);
+    gpio_set_function(config->clock_pin_base, GPIO_FUNC_PIO0);
+    gpio_set_function(config->clock_pin_base + 1, GPIO_FUNC_PIO0);
+    
+    gpio_set_drive_strength(config->data_pin, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(config->clock_pin_base, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(config->clock_pin_base + 1, GPIO_DRIVE_STRENGTH_12MA);
+    
+    // Claim state machine
+    audio_sm = pio_claim_unused_sm(audio_pio, true);
+    config->sm = audio_sm;
+    printf("Audio: Using PIO0 SM%d\n", audio_sm);
+    
+    // Add PIO program
+    uint offset = pio_add_program(audio_pio, &audio_i2s_program);
+    audio_i2s_program_init(audio_pio, audio_sm, offset, 
+                           config->data_pin, config->clock_pin_base);
+    
+    // Set clock divider for sample rate
+    uint32_t sys_clk = clock_get_hz(clk_sys);
+    uint32_t divider = sys_clk * 4 / config->sample_freq;
+    pio_sm_set_clkdiv_int_frac(audio_pio, audio_sm, divider >> 8u, divider & 0xffu);
+    printf("Audio: Clock divider: %lu.%lu (sys=%lu MHz)\n", 
+           divider >> 8u, divider & 0xffu, sys_clk / 1000000);
+    
+    // Allocate single DMA buffer
+    dma_buffer = malloc(config->dma_trans_count * sizeof(uint32_t));
+    if (!dma_buffer) {
+        printf("Audio: Buffer allocation failed!\n");
+        return;
+    }
+    memset(dma_buffer, 0, config->dma_trans_count * sizeof(uint32_t));
+    config->dma_buf = (uint16_t *)dma_buffer;
+    
+    // Configure DMA
+    dma_channel = dma_claim_unused_channel(true);
+    config->dma_channel = dma_channel;
+    printf("Audio: Using DMA channel %d\n", dma_channel);
+    
+    dma_channel_config dma_cfg = dma_channel_get_default_config(dma_channel);
+    channel_config_set_read_increment(&dma_cfg, true);
+    channel_config_set_write_increment(&dma_cfg, false);
+    channel_config_set_transfer_data_size(&dma_cfg, DMA_SIZE_32);
+    channel_config_set_dreq(&dma_cfg, pio_get_dreq(audio_pio, audio_sm, true));
+    
+    dma_channel_configure(
+        dma_channel,
+        &dma_cfg,
+        &audio_pio->txf[audio_sm],
+        dma_buffer,
+        config->dma_trans_count,
+        false  // Don't start yet
+    );
+    
+    // Enable PIO state machine
+    pio_sm_set_enabled(audio_pio, audio_sm, true);
+    
+    dma_active = false;
+    printf("Audio: I2S ready\n");
+}
+
+void i2s_dma_write(i2s_config_t *config, const int16_t *samples) {
+    // Wait for previous DMA to complete (this is the timing mechanism!)
+    if (dma_active) {
+        dma_channel_wait_for_finish_blocking(dma_channel);
+    }
+    
+    // Copy samples to DMA buffer
+    if (config->volume == 0) {
+        memcpy(dma_buffer, samples, dma_transfer_count * sizeof(uint32_t));
+    } else {
+        int16_t *buf16 = (int16_t *)dma_buffer;
+        for (uint32_t i = 0; i < dma_transfer_count * 2; i++) {
+            buf16[i] = samples[i] >> config->volume;
+        }
+    }
+    
+    // Start DMA transfer
+    dma_channel_set_read_addr(dma_channel, dma_buffer, false);
+    dma_channel_set_trans_count(dma_channel, dma_transfer_count, true);
+    dma_active = true;
+}
+
+void i2s_volume(i2s_config_t *config, uint8_t volume) {
+    if (volume > 16) volume = 16;
+    config->volume = volume;
+}
+
+void i2s_increase_volume(i2s_config_t *config) {
+    if (config->volume > 0) config->volume--;
+}
+
+void i2s_decrease_volume(i2s_config_t *config) {
+    if (config->volume < 16) config->volume++;
+}
+
+//=============================================================================
+// High-level Audio API
 //=============================================================================
 
 static bool audio_initialized = false;
 static bool audio_enabled = true;
-static int master_volume = 64;  // 0-128 (half volume to prevent clipping)
+static int master_volume = 100;  // 0-128
+static i2s_config_t i2s_config;
 
-static struct audio_buffer_pool *producer_pool = NULL;
-
-// Audio format: 16-bit stereo
-static struct audio_format audio_format = {
-    .format = AUDIO_BUFFER_FORMAT_PCM_S16,
-    .sample_freq = AUDIO_SAMPLE_RATE,
-    .channel_count = 2,
-};
-
-static struct audio_buffer_format producer_format = {
-    .format = &audio_format,
-    .sample_stride = 4  // 2 bytes per sample * 2 channels
-};
-
-//=============================================================================
-// Helper functions
-//=============================================================================
+// Mixed stereo buffer
+static int16_t __attribute__((aligned(4))) mixed_buffer[AUDIO_BUFFER_SAMPLES * 2];
 
 static inline int16_t clamp_s16(int32_t v) {
     if (v > 32767) return 32767;
@@ -82,168 +180,19 @@ static inline int16_t clamp_s16(int32_t v) {
     return (int16_t)v;
 }
 
-//=============================================================================
-// Audio mixing - direct from sound chip buffers
-//=============================================================================
-
-static int debug_frame_count = 0;
-static void mix_audio_buffer(audio_buffer_t *buffer) {
-    int16_t *samples = (int16_t *)buffer->buffer->bytes;
-    int sample_count = buffer->max_sample_count;
-    
-    // Clear buffer first
-    memset(samples, 0, sample_count * 4);  // 4 bytes per stereo sample
-    
-    if (!audio_enabled) {
-        buffer->sample_count = sample_count;
-        give_audio_buffer(producer_pool, buffer);
-        return;
-    }
-    
-    // Determine how many samples we actually have
-    int ym_samples = ym2612_index;
-    int sn_samples = sn76489_index;
-    int available_samples = (ym_samples > sn_samples) ? ym_samples : sn_samples;
-    
-    // Limit to buffer size
-    if (available_samples > sample_count) {
-        available_samples = sample_count;
-    }
-    
-    // If no samples available, output silence
-    if (available_samples == 0) {
-        buffer->sample_count = sample_count;
-        give_audio_buffer(producer_pool, buffer);
-        return;
-    }
-    
-    // Debug first few frames
-    static bool debug_done = false;
-    if (!debug_done && debug_frame_count < 3 && ym_samples > 10) {
-        printf("\n=== Audio mix #%d ===\n", debug_frame_count);
-        printf("Samples: ym=%d, sn=%d, available=%d, buffer_max=%d\n", 
-               ym_samples, sn_samples, available_samples, sample_count);
-        
-        // Analyze YM2612 buffer for range and clipping
-        int16_t min_val = 32767, max_val = -32768;
-        int32_t sum = 0;
-        int clip_count = 0;
-        for (int i = 0; i < ym_samples; i++) {
-            int16_t val = gwenesis_ym2612_buffer[i];
-            if (val < min_val) min_val = val;
-            if (val > max_val) max_val = val;
-            sum += val;
-            if (val <= -32768 || val >= 32767) clip_count++;
-        }
-        int16_t avg = sum / ym_samples;
-        printf("YM2612: min=%d, max=%d, avg=%d, clips=%d/%d (%.1f%%)\n", 
-               min_val, max_val, avg, clip_count, ym_samples, 
-               (clip_count * 100.0) / ym_samples);
-        
-        printf("First 20 samples: ");
-        for (int i = 0; i < 20 && i < ym_samples; i++) {
-            printf("%d ", gwenesis_ym2612_buffer[i]);
-        }
-        printf("\n");
-        
-        debug_frame_count++;
-        if (debug_frame_count >= 3) debug_done = true;
-    }
-    
-    // Mix both sound chips
-    for (int i = 0; i < available_samples; i++) {
-        int32_t mixed = 0;
-        
-        if (i < ym_samples) {
-            mixed += gwenesis_ym2612_buffer[i];
-        }
-        if (i < sn_samples) {
-            mixed += gwenesis_sn76489_buffer[i];
-        }
-        
-        // Apply volume and clamp
-        mixed = (mixed * master_volume) >> 7;
-        int16_t sample = clamp_s16(mixed);
-        
-        // Stereo output (duplicate mono to both channels)
-        samples[i * 2] = sample;
-        samples[i * 2 + 1] = sample;
-    }
-    
-    buffer->sample_count = available_samples;
-    give_audio_buffer(producer_pool, buffer);
-}
-
-//=============================================================================
-// Public API
-//=============================================================================
-
 bool audio_init(void) {
-    if (audio_initialized) {
-        return true;
-    }
+    if (audio_initialized) return true;
     
-    printf("Audio: Initializing I2S audio...\n");
-    printf("Audio: Sample rate: %d Hz\n", AUDIO_SAMPLE_RATE);
-    printf("Audio: I2S pins - DATA: %d, CLK_BASE: %d\n", 
-           PICO_AUDIO_I2S_DATA_PIN, PICO_AUDIO_I2S_CLOCK_PIN_BASE);
-    printf("Audio: PIO: %d, SM: %d, DMA: %d, IRQ: %d\n",
-           PICO_AUDIO_I2S_PIO, PICO_AUDIO_I2S_STATE_MACHINE,
-           PICO_AUDIO_I2S_DMA_CHANNEL, PICO_AUDIO_I2S_DMA_IRQ);
-    
-    // Create producer pool with 4 buffers for smooth audio
-    producer_pool = audio_new_producer_pool(&producer_format, 4, AUDIO_BUFFER_SAMPLES);
-    if (producer_pool == NULL) {
-        printf("Audio: Failed to allocate producer pool!\n");
-        return false;
-    }
-    
-    // Configure I2S
-    struct audio_i2s_config config = {
-        .data_pin = PICO_AUDIO_I2S_DATA_PIN,
-        .clock_pin_base = PICO_AUDIO_I2S_CLOCK_PIN_BASE,
-        .dma_channel = PICO_AUDIO_I2S_DMA_CHANNEL,
-        .pio_sm = PICO_AUDIO_I2S_STATE_MACHINE,
-    };
-    
-    printf("Connecting PIO I2S audio\n");
-    
-    // Initialize I2S
-    const struct audio_format *output_format = audio_i2s_setup(&audio_format, &config);
-    if (!output_format) {
-        printf("Audio: Failed to initialize I2S!\n");
-        return false;
-    }
-    
-#if INCREASE_I2S_DRIVE_STRENGTH
-    // Increase drive strength for cleaner I2S signal
-    gpio_set_drive_strength(PICO_AUDIO_I2S_DATA_PIN, GPIO_DRIVE_STRENGTH_12MA);
-    gpio_set_drive_strength(PICO_AUDIO_I2S_CLOCK_PIN_BASE, GPIO_DRIVE_STRENGTH_12MA);
-    gpio_set_drive_strength(PICO_AUDIO_I2S_CLOCK_PIN_BASE + 1, GPIO_DRIVE_STRENGTH_12MA);
-#endif
-    
-    // Connect producer pool to I2S output
-    bool ok = audio_i2s_connect_extra(producer_pool, false, 0, 0, NULL);
-    if (!ok) {
-        printf("Audio: Failed to connect audio pipeline!\n");
-        return false;
-    }
-    
-    // Enable I2S output
-    audio_i2s_set_enabled(true);
+    i2s_config = i2s_get_default_config();
+    i2s_init(&i2s_config);
     
     audio_initialized = true;
-    printf("Audio: Initialization complete\n");
-    
     return true;
 }
 
 void audio_shutdown(void) {
-    if (!audio_initialized) {
-        return;
-    }
-    
-    audio_i2s_set_enabled(false);
+    if (!audio_initialized) return;
+    pio_sm_set_enabled(audio_pio, audio_sm, false);
     audio_initialized = false;
 }
 
@@ -251,24 +200,41 @@ bool audio_is_initialized(void) {
     return audio_initialized;
 }
 
-void audio_update(void) {
-    if (!audio_initialized) {
+void audio_submit(void) {
+    if (!audio_initialized) return;
+    
+    if (!audio_enabled) {
+        memset(mixed_buffer, 0, sizeof(mixed_buffer));
+        i2s_dma_write(&i2s_config, mixed_buffer);
         return;
     }
     
-    // Process all available audio buffers
-    audio_buffer_t *buffer;
-    while ((buffer = take_audio_buffer(producer_pool, false)) != NULL) {
-        mix_audio_buffer(buffer);
+    int ym_samples = ym2612_index;
+    int sn_samples = sn76489_index;
+    int available = (ym_samples > sn_samples) ? ym_samples : sn_samples;
+    if (available > AUDIO_BUFFER_SAMPLES) available = AUDIO_BUFFER_SAMPLES;
+    
+    // Mix sound chips
+    for (int i = 0; i < available; i++) {
+        int32_t mixed = 0;
+        if (i < ym_samples) mixed += gwenesis_ym2612_buffer[i];
+        if (i < sn_samples) mixed += gwenesis_sn76489_buffer[i];
+        
+        mixed = (mixed * master_volume) >> 7;
+        int16_t sample = clamp_s16(mixed);
+        
+        // Stereo (mono duplicated)
+        mixed_buffer[i * 2] = sample;
+        mixed_buffer[i * 2 + 1] = sample;
     }
-}
-
-struct audio_buffer_pool *audio_get_producer_pool(void) {
-    return producer_pool;
-}
-
-void audio_fill_buffer(audio_buffer_t *buffer) {
-    mix_audio_buffer(buffer);
+    
+    // Fill rest with silence
+    for (int i = available; i < AUDIO_BUFFER_SAMPLES; i++) {
+        mixed_buffer[i * 2] = 0;
+        mixed_buffer[i * 2 + 1] = 0;
+    }
+    
+    i2s_dma_write(&i2s_config, mixed_buffer);
 }
 
 void audio_set_volume(int volume) {
@@ -290,11 +256,9 @@ bool audio_is_enabled(void) {
 }
 
 void audio_debug_buffer_values(void) {
-    if (ym2612_index > 0) {
-        printf("YM2612 buffer samples: ");
-        for (int i = 0; i < 20 && i < ym2612_index; i++) {
-            printf("%d ", gwenesis_ym2612_buffer[i]);
-        }
-        printf("\n");
-    }
+    printf("Audio: ym=%d sn=%d\n", ym2612_index, sn76489_index);
+}
+
+i2s_config_t* audio_get_i2s_config(void) {
+    return &i2s_config;
 }

@@ -60,31 +60,18 @@ add_library(drivers
     drivers/psram_init.c
     drivers/psram_allocator.c
     drivers/audio.c
-    drivers/audio_i2s_opt.S
 )
-target_include_directories(drivers PUBLIC drivers src)
+
+# Generate PIO header for I2S audio
+pico_generate_pio_header(drivers ${CMAKE_CURRENT_LIST_DIR}/drivers/audio_i2s.pio)
+
+target_include_directories(drivers PUBLIC drivers src ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_definitions(drivers PRIVATE
     BOARD_${BOARD_VARIANT}
     PSRAM_MAX_FREQ_MHZ=${PSRAM_SPEED}
-    # I2S Audio configuration - use PIO0 to avoid conflict with HDMI on PIO1
-    PICO_AUDIO_I2S_PIO=0
-    PICO_AUDIO_I2S_DMA_IRQ=1
 )
 
-# Set I2S pins based on board variant for drivers lib
-if(BOARD_VARIANT STREQUAL "M1")
-    target_compile_definitions(drivers PRIVATE
-        PICO_AUDIO_I2S_DATA_PIN=26
-        PICO_AUDIO_I2S_CLOCK_PIN_BASE=27
-    )
-elseif(BOARD_VARIANT STREQUAL "M2")
-    target_compile_definitions(drivers PRIVATE
-        PICO_AUDIO_I2S_DATA_PIN=9
-        PICO_AUDIO_I2S_CLOCK_PIN_BASE=10
-    )
-endif()
-
-target_link_libraries(drivers pico_stdlib hardware_dma hardware_pio hardware_spi pico_audio_i2s)
+target_link_libraries(drivers pico_stdlib hardware_dma hardware_pio hardware_spi)
 
 # Gwenesis emulator sources
 set(GWENESIS_SOURCES

@@ -33,13 +33,8 @@
 #include "sound/ym2612.h"
 #include "sound/gwenesis_sn76489.h"
 
-// Audio driver
+// Audio driver (simple DMA-based I2S)
 #include "audio.h"
-
-// Pico audio for buffer types
-#define none pico_audio_enum_none
-#include "pico/audio_i2s.h"
-#undef none
 
 // Gamepad driver
 #include "nespad/nespad.h"
@@ -327,7 +322,7 @@ static void setup_genesis_palette(void) {
     }
 }
 
-// Sound processing on Core 1 (Z80 + YM2612 + SN76489 + I2S)
+// Sound processing on Core 1 (sound chips + I2S output)
 static void __scratch_x("sound") sound_core(void) {
     // Allow core 0 to pause this core during flash operations
     multicore_lockout_victim_init();
@@ -338,56 +333,27 @@ static void __scratch_x("sound") sound_core(void) {
     // Signal that we're ready
     sem_release(&render_start_semaphore);
     
-    // Sound runs at fixed 60Hz regardless of rendering speed
-    uint64_t last_sound_frame = time_us_64();
-    const uint64_t sound_frame_period = 16666; // 60Hz fixed
-    
-    // Core 1 loop - runs Z80 + sound chips (complete sound subsystem)
+    // Core 1 loop - runs sound chips at 60Hz, output via I2S
+    // The DMA blocking wait provides the timing (888 samples @ 53267 Hz = 16.67ms)
     while (1) {
-        uint64_t now = time_us_64();
+        int lpf = sound_lines_per_frame;
         
-        // Process sound frame at fixed 60Hz
-        if (now >= last_sound_frame + sound_frame_period) {
-            int lpf = sound_lines_per_frame;
-            
-            // Reset sound chip indices for this frame
-            sn76489_clock = 0;
-            sn76489_index = 0;
-            ym2612_clock = 0;
-            ym2612_index = 0;
-            
-            // DAC buffer is continuous stream - no reset needed
-            
-            // Sound chips generate samples based on their internal state
-            // (which was updated by Z80 writes from Core 0)
-            for (int line = 0; line < lpf; line++) {
-                int line_clock = (line + 1) * VDP_CYCLES_PER_LINE;
-                
-                // Run sound chips to generate audio samples
-                gwenesis_SN76489_run(line_clock);
-                ym2612_run(line_clock);
-            }
-            
-            // Mix and output audio
-            audio_update();
-            
-            // Debug first few frames
-            static int sound_debug_count = 0;
-            if (sound_debug_count < 3) {
-                audio_debug_buffer_values();
-                sound_debug_count++;
-            }
-            
-            last_sound_frame += sound_frame_period;
+        // Reset sound chip indices for this frame
+        sn76489_clock = 0;
+        sn76489_index = 0;
+        ym2612_clock = 0;
+        ym2612_index = 0;
+        
+        // Run sound chips to generate samples for full frame
+        for (int line = 0; line < lpf; line++) {
+            int line_clock = (line + 1) * VDP_CYCLES_PER_LINE;
+            gwenesis_SN76489_run(line_clock);
+            ym2612_run(line_clock);
         }
         
-        // Continuously feed I2S buffers
-        audio_buffer_t *buffer = take_audio_buffer(audio_get_producer_pool(), false);
-        if (buffer != NULL) {
-            audio_fill_buffer(buffer);
-        }
-        
-        tight_loop_contents();
+        // Submit to I2S - blocks until previous frame's audio is done
+        // This naturally limits Core 1 to 60Hz
+        audio_submit();
     }
 }
 
@@ -425,45 +391,8 @@ static void __time_critical_func(emulation_loop)(void) {
             last_screen_height = screen_height;
         }
         
-        // ------------------------------------------------------------------
-        // Timing + adaptive frame-skip
-        //
-        // Goal: keep emulation (and therefore audio/game speed) on a fixed
-        // wall-clock cadence. If rendering makes us fall behind, skip rendering
-        // for that frame instead of slowing emulation.
-        // ------------------------------------------------------------------
-        bool render_this_frame = true;
-
-#if !DISABLE_FRAME_LIMITING
-        {
-            const uint64_t now = time_us_64();
-            const uint64_t base_period_us = is_pal ? 20000u : 16666u; // 50Hz vs 60Hz
-            const uint64_t frame_period_us = (base_period_us * 100u) / EMULATION_SPEED_PERCENT;
-
-            if (frame_num == 0) {
-                first_frame_time = now;
-            }
-
-            const uint64_t expected_start = first_frame_time + ((uint64_t)frame_num * frame_period_us);
-            const int64_t lateness_us = (int64_t)now - (int64_t)expected_start;
-
-            // Alternating frame-skip pattern to avoid stuck blinking sprites
-            // Uses 2-2-1-1 pattern over 6 frames: render 3, skip 3
-            // This ensures blinking sprites remain visible
-            const uint32_t pattern_pos = render_phase % 6;
-            render_this_frame = (pattern_pos == 0 || pattern_pos == 1 || pattern_pos == 3);
-            render_phase++;
-
-            // If we're way behind, resync to avoid a catch-up spiral.
-            if (lateness_us > (int64_t)(frame_period_us * 2)) {
-                first_frame_time = now;
-                frame_num = 0;
-                render_this_frame = true;
-                consecutive_skipped_frames = 0;
-                render_phase = 0;
-            }
-        }
-#endif
+        // Frame skip: render 2 out of 3 frames
+        bool render_this_frame = (frame_num % 3) != 0;
 
         PROFILE_FRAME_START();
         
@@ -551,30 +480,11 @@ static void __time_critical_func(emulation_loop)(void) {
             consecutive_skipped_frames++;
         }
         
-        // Update sound parameters (Core 1 runs independently)
+        // Update sound parameters for Core 1
         sound_screen_height = screen_height;
         sound_lines_per_frame = lines_per_frame;
         
-#if !DISABLE_FRAME_LIMITING
-        {
-            const uint64_t base_period_us = is_pal ? 20000u : 16666u; // 50Hz vs 60Hz
-            const uint64_t frame_period_us = (base_period_us * 100u) / EMULATION_SPEED_PERCENT;
-
-            // Advance to next frame slot and wait if we're ahead.
-            frame_num++;
-            const uint64_t target_time = first_frame_time + ((uint64_t)frame_num * frame_period_us);
-
-            while (time_us_64() < target_time) {
-                const uint64_t remaining = target_time - time_us_64();
-                if (remaining > 1000) {
-                    // Sleep for most of the wait, but in small chunks.
-                    sleep_us(500);
-                } else {
-                    tight_loop_contents();
-                }
-            }
-        }
-#endif
+        frame_num++;
         
         PROFILE_FRAME_END();
         
@@ -658,13 +568,13 @@ int main(void) {
     // Initialize semaphore for sound core sync
     sem_init(&render_start_semaphore, 0, 1);
     
-    // Launch Core 1 (Z80 + sound only, no HDMI)
-    LOG("Starting sound core...\n");
+    // Launch Core 1 (sound generation + I2S output)
+    LOG("Starting sound core...\\n");
     multicore_launch_core1(sound_core);
     
     // Wait for Core 1 to be ready
     sem_acquire_blocking(&render_start_semaphore);
-    LOG("Sound core started\n");
+    LOG("Sound core started\\n");
     
     // Initialize gamepad (needed for ROM selector)
     LOG("Initializing gamepad...\n");

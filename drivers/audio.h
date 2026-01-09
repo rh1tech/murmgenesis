@@ -1,26 +1,61 @@
 /*
- * murmgenesis - Audio driver for RP2350
- * Uses pico_audio_i2s for I2S output
- * Based on murmdoom approach
+ * murmgenesis - Simple DMA-based I2S Audio Driver for RP2350
+ * Based on pico-megadrive audio driver by Vincent Mistler
+ * 
+ * This is a much simpler approach than pico_audio_i2s:
+ * - Direct PIO + DMA without the complex audio_buffer system
+ * - Single DMA buffer with blocking wait
+ * - Lower overhead, better for real-time emulation
  */
 #ifndef AUDIO_H
 #define AUDIO_H
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <hardware/pio.h>
+#include <hardware/clocks.h>
+#include <hardware/dma.h>
 
-// Forward declarations to avoid pulling in pico_audio headers
-struct audio_buffer_pool;
-struct audio_buffer;
-
-// Audio sample rate - Genesis NTSC runs at ~53211 Hz
-// (53693175 Hz master clock / 896040 cycles per frame * 888 samples per frame)
-// Using 53267 Hz to match original implementation
+// Audio sample rate - Genesis NTSC runs at ~53267 Hz
 #define AUDIO_SAMPLE_RATE 53267
 
-// Audio buffer size - samples per buffer
-// Should be enough to cover one frame at 60 FPS (~888 samples)
-#define AUDIO_BUFFER_SAMPLES 1024
+// Audio buffer size - samples per frame (NTSC: 888 samples/frame at 60fps)
+#define AUDIO_BUFFER_SAMPLES 888
+
+// I2S configuration structure
+typedef struct {
+    uint32_t sample_freq;        
+    uint16_t channel_count; 
+    uint8_t  data_pin;
+    uint8_t  clock_pin_base;
+    PIO      pio;
+    uint8_t  sm; 
+    uint8_t  dma_channel;
+    uint16_t dma_trans_count;
+    uint16_t *dma_buf;
+    uint8_t  volume;  // 0 = max volume, higher = quieter (shift amount)
+} i2s_config_t;
+
+// Get default I2S configuration
+i2s_config_t i2s_get_default_config(void);
+
+// Initialize I2S with the given configuration
+void i2s_init(i2s_config_t *config);
+
+// Write samples to I2S via DMA (non-blocking after first call)
+// samples: pointer to stereo samples (interleaved L/R as 32-bit words)
+void i2s_dma_write(i2s_config_t *config, const int16_t *samples);
+
+// Adjust volume (0 = loudest, 16 = quietest)
+void i2s_volume(i2s_config_t *config, uint8_t volume);
+void i2s_increase_volume(i2s_config_t *config);
+void i2s_decrease_volume(i2s_config_t *config);
+
+//=============================================================================
+// High-level audio API (wraps I2S)
+//=============================================================================
 
 // Initialize audio system
 bool audio_init(void);
@@ -31,15 +66,9 @@ void audio_shutdown(void);
 // Check if audio is initialized
 bool audio_is_initialized(void);
 
-// Update audio - call this after sound chips have run
-// Mixes YM2612 and SN76489 output and sends to I2S
-void audio_update(void);
-
-// Get producer pool for direct buffer access
-struct audio_buffer_pool *audio_get_producer_pool(void);
-
-// Fill an I2S buffer directly from sound chip buffers
-void audio_fill_buffer(struct audio_buffer *buffer);
+// Submit mixed audio buffer to I2S (call once per frame)
+// This mixes YM2612 and SN76489 outputs and sends to I2S
+void audio_submit(void);
 
 // Set master volume (0-128)
 void audio_set_volume(int volume);
@@ -52,6 +81,11 @@ void audio_set_enabled(bool enabled);
 
 // Check if audio is enabled
 bool audio_is_enabled(void);
+
+// Debug function
 void audio_debug_buffer_values(void);
+
+// Get the I2S config for direct access (for Core 1 loop)
+i2s_config_t* audio_get_i2s_config(void);
 
 #endif // AUDIO_H
