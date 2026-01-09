@@ -164,12 +164,6 @@ m68k_run_fast:
     cmp     r10, r0
     beq     .Lhandle_nop
     
-    /* Check for DBF Dn (0x51C8-0x51CF) - 9% of instructions combined */
-    movw    r0, #0x51C8
-    sub     r1, r10, r0             @ r1 = opcode - 0x51C8
-    cmp     r1, #8                  @ Check if in range 0-7 (D0-D7)
-    blo     .Lhandle_dbf            @ Unsigned less than = in range
-    
     /* Check for MOVEQ (0x7000-0x7EFF, bit 8 must be 0) */
     /* Format: 0111 Rrr0 dddddddd where Rrr=Dn, d=data */
     and     r0, r10, #0xF100        @ Mask to get 7x0x pattern
@@ -177,12 +171,8 @@ m68k_run_fast:
     cmp     r0, r1
     beq     .Lhandle_moveq
     
-    /* Check for BNE.B (0x6601-0x66FE) - ~1% of instructions */
-    lsr     r0, r10, #8             @ Get high byte
-    cmp     r0, #0x66               @ Is it BNE?
-    beq     .Lcheck_bcc_displacement
-    
     /* Check for BEQ.B (0x6701-0x67FE) */
+    lsr     r0, r10, #8             @ Get high byte
     cmp     r0, #0x67               @ Is it BEQ?
     beq     .Lcheck_bcc_displacement
     
@@ -198,8 +188,6 @@ m68k_run_fast:
     beq     .Lno_inline
     
     /* Dispatch to correct Bcc handler based on high byte (still in r0) */
-    cmp     r0, #0x66
-    beq     .Lhandle_bne_b
     cmp     r0, #0x67
     beq     .Lhandle_beq_b
     b       .Lhandle_bra_b          @ Must be BRA
@@ -242,93 +230,6 @@ m68k_run_fast:
  */
 .Lhandle_nop:
     add     r4, r4, #28             @ NOP takes 4 cycles * 7
-    b       .Lmain_loop
-
-/*
- * DBF Dn,label handler (opcodes 0x51C8-0x51CF)
- * Decrement Dn.W, branch if Dn.W != -1
- * This is ~9% of all instructions (loop counters)
- * 
- * Entry: r10 = opcode (0x51C8-0x51CF)
- * PC points to the 16-bit displacement word
- * 
- * Cycle timing:
- *   Base: 10 cycles (from table)
- *   Not expired (branch taken): -2 cycles adjustment
- *   Expired (fall through): +2 cycles adjustment
- */
-.Lhandle_dbf:
-    /* First check if PC is in ROM - if not, use table handler */
-    /* This avoids modifying state before we know we can handle it */
-    ldr     r0, [r5, #M68K_PC]      @ r0 = PC (points to displacement)
-    movw    r1, #0
-    movt    r1, #0x80               @ r1 = 0x800000
-    cmp     r0, r1
-    bhs     .Lno_inline             @ PC not in ROM, use table handler (no state modified)
-    
-    /* PC is in ROM - we can handle this inline */
-    and     r1, r10, #7             @ r1 = register number (0-7)
-    lsl     r1, r1, #2              @ r1 = register offset (0, 4, 8, ...)
-    add     r2, r5, #M68K_DAR       @ r2 = base of D/A registers
-    ldr     r3, [r2, r1]            @ r3 = current Dn value (full 32-bit)
-    
-    /* Decrement lower 16 bits only, preserve upper 16 bits */
-    uxth    r11, r3                 @ r11 = Dn.W (lower 16 bits, zero-extended)
-    sub     r11, r11, #1            @ r11 = Dn.W - 1
-    bfi     r3, r11, #0, #16        @ Insert lower 16 bits back into r3
-    str     r3, [r2, r1]            @ Store updated Dn
-    
-    /* Check if result is -1 (0xFFFF in lower 16 bits) */
-    movw    r1, #0xFFFF
-    uxth    r11, r11                @ Mask to 16 bits
-    cmp     r11, r1
-    beq     .Ldbf_expired           @ Counter expired, don't branch
-    
-    /* Counter not expired - fetch displacement and branch */
-    /* r0 still has PC from earlier check */
-    ldr     r1, [r9]                @ r1 = ROM_DATA pointer
-    ldrh    r2, [r1, r0]            @ r2 = displacement word (already byte-swapped during ROM load)
-    sxth    r2, r2                  @ Sign extend to 32-bit
-    
-    /* New PC = (PC pointing at disp) + displacement */
-    add     r0, r0, r2              @ r0 = PC + displacement
-    str     r0, [r5, #M68K_PC]      @ Store new PC
-    
-    /* DBF branch taken: (10 - 2) * 7 = 56 cycles */
-    add     r4, r4, #56
-    b       .Lmain_loop
-    
-.Ldbf_expired:
-    /* Counter reached -1 (0xFFFF), skip displacement word */
-    ldr     r0, [r5, #M68K_PC]
-    add     r0, r0, #2              @ Skip displacement word
-    str     r0, [r5, #M68K_PC]
-    /* DBF expired: (10 + 2) * 7 = 84 cycles */
-    add     r4, r4, #84
-    b       .Lmain_loop
-
-/*
- * BNE.B handler (opcodes 0x6601-0x66FE, 8-bit displacement)
- * Branch if Z flag is clear (NOT_Z_FLAG != 0)
- * 
- * r10 = opcode (0x66XX where XX is signed displacement)
- */
-.Lhandle_bne_b:
-    /* Check Z flag (NOT_Z_FLAG: 0 = Z set, non-zero = Z clear) */
-    ldr     r0, [r5, #M68K_NOT_Z_FLAG]
-    cmp     r0, #0
-    beq     .Lbne_not_taken         @ Z is set, don't branch
-    
-    /* Z is clear - take the branch */
-    sxtb    r0, r10                 @ Sign-extend 8-bit displacement
-    ldr     r1, [r5, #M68K_PC]
-    add     r1, r1, r0              @ PC += displacement
-    str     r1, [r5, #M68K_PC]
-    add     r4, r4, #70             @ Branch taken = 10 * 7 cycles
-    b       .Lmain_loop
-    
-.Lbne_not_taken:
-    add     r4, r4, #56             @ Branch not taken = 8 * 7 cycles
     b       .Lmain_loop
 
 /*
