@@ -21,8 +21,8 @@
 // Audio sample rate - Genesis NTSC runs at ~53267 Hz
 #define AUDIO_SAMPLE_RATE 53267
 
-// Audio buffer size - samples per frame (NTSC: 888 samples/frame at 60fps)
-#define AUDIO_BUFFER_SAMPLES 888
+// Audio buffer size - enough for both NTSC (~888) and PAL (~1061) with headroom
+#define AUDIO_BUFFER_SAMPLES 1120
 
 // I2S configuration structure
 typedef struct {

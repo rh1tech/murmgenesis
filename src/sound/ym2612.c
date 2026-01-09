@@ -649,7 +649,10 @@ typedef struct
 {
   FM_CH CH[6];  /* channel state */
   UINT8 dacen;  /* DAC mode  */
-  INT32 dacout; /* DAC output */
+  INT32 dacout; /* DAC output (target value) */
+  INT32 dacout_smooth; /* DAC output (smoothed for output) */
+  UINT8 dacen_prev; /* Previous DAC enable state for transition detection */
+  INT32 ch6_last_fm; /* Last FM output of channel 6 for smooth DAC transitions */
   FM_OPN OPN;   /* OPN state */
   UINT32 divisor; /* sample rate divsor in system clock */
   UINT32 dac_stable_counter; /* DAC enable stability counter */
@@ -1982,6 +1985,9 @@ void YM2612ResetChip(void)
 
   ym2612.dacen            = 0;
   ym2612.dacout           = 0;
+  ym2612.dacout_smooth    = 0;
+  ym2612.dacen_prev       = 0;
+  ym2612.ch6_last_fm      = 0;
   ym2612.dac_stable_counter = 0;
 
   set_timers(0x30);
@@ -2061,17 +2067,30 @@ static inline void YM2612Update(int16_t *buffer, int length)
     /* update SSG-EG output */
     update_ssg_eg_channels(&ym2612.CH[0]);
 
-    /* calculate FM */
-    if (!ym2612.dacen)
+    /* calculate FM - always calculate all 6 channels */
+    chan_calc(&ym2612.CH[0],6);
+    
+    /* Save channel 6 FM output for smooth DAC transitions */
+    ym2612.ch6_last_fm = out_fm[5];
+    
+    /* DAC Mode handling with smooth transitions */
+    if (ym2612.dacen)
     {
-      chan_calc(&ym2612.CH[0],6);
+      /* Smooth DAC value changes (slew rate limit) */
+      /* Max change of 512 per sample (~26kHz max slew) prevents harsh clicks */
+      INT32 dac_delta = ym2612.dacout - ym2612.dacout_smooth;
+      if (dac_delta > 512) {
+        ym2612.dacout_smooth += 512;
+      } else if (dac_delta < -512) {
+        ym2612.dacout_smooth -= 512;
+      } else {
+        ym2612.dacout_smooth = ym2612.dacout;
+      }
+      
+      /* Use smoothed DAC output */
+      out_fm[5] = ym2612.dacout_smooth;
     }
-    else
-    {
-      /* DAC Mode */
-      out_fm[5] = ym2612.dacout;
-      chan_calc(&ym2612.CH[0],5);
-    }
+    /* When DAC is disabled, out_fm[5] already has FM output from chan_calc */
 
     /* advance LFO */
     advance_lfo();
@@ -2184,9 +2203,9 @@ void YM2612Write(unsigned int a, unsigned int v,  int target)
 {
   ym_log(__FUNCTION__," %06x : %02x",a,v);
 
-  //Sync
-  if (GWENESIS_AUDIO_ACCURATE == 1)
-    ym2612_run(target); 
+  //Sync - TEMPORARILY DISABLED to test if CPU load causes clicks
+  // if (GWENESIS_AUDIO_ACCURATE == 1)
+  //   ym2612_run(target); 
 
   v &= 0xff;  /* adjust to 8 bit bus */
 

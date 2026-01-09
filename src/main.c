@@ -146,6 +146,17 @@ static semaphore_t render_start_semaphore;
 // Sound processing synchronization
 static volatile int sound_lines_per_frame = LINES_PER_FRAME_NTSC;
 static volatile int sound_screen_height = 224;
+static volatile bool frame_ready = false;  // Core 0 signals frame done
+static volatile bool audio_done = false;   // Core 1 signals audio submitted
+
+// Saved sample counts for Core 1 (avoids race condition when reading indices)
+volatile int saved_ym_samples = 0;
+volatile int saved_sn_samples = 0;
+volatile int16_t last_frame_sample = 0;  // Last sample for crossfade
+
+// Read buffer pointers for Core 1 (points to completed frame's audio)
+int16_t *audio_read_sn76489 = NULL;
+int16_t *audio_read_ym2612 = NULL;
 
 // ROM buffer in PSRAM
 static uint8_t *rom_buffer = NULL;
@@ -161,16 +172,21 @@ extern int hint_pending;
 extern int screen_width;
 extern int screen_height;
 
-// Audio buffers - keep in regular SRAM (not PSRAM) to avoid contention
+// Audio buffers - DOUBLE BUFFERED to prevent race conditions
+// Core 0 writes to one buffer, Core 1 reads from the other
 // Use __not_in_flash to ensure they stay in RAM
-// With GWENESIS_AUDIO_ACCURATE=1, we need larger buffers to handle timing variations
 #define AUDIO_BUFFER_SIZE 4096
-static int16_t __not_in_flash("audio") gwenesis_sn76489_buffer_mem[AUDIO_BUFFER_SIZE];
-static int16_t __not_in_flash("audio") gwenesis_ym2612_buffer_mem[AUDIO_BUFFER_SIZE];
+static int16_t __not_in_flash("audio") gwenesis_sn76489_buffer_mem[2][AUDIO_BUFFER_SIZE];
+static int16_t __not_in_flash("audio") gwenesis_ym2612_buffer_mem[2][AUDIO_BUFFER_SIZE];
 
-// Exported pointers for external access
-int16_t *gwenesis_sn76489_buffer = gwenesis_sn76489_buffer_mem;
-int16_t *gwenesis_ym2612_buffer = gwenesis_ym2612_buffer_mem;
+// Current write buffer index (0 or 1) - Core 0 writes here
+static volatile int audio_write_buffer = 0;
+// Current read buffer index (0 or 1) - Core 1 reads here
+static volatile int audio_read_buffer = 0;
+
+// Exported pointers for external access (points to current write buffer)
+int16_t *gwenesis_sn76489_buffer = gwenesis_sn76489_buffer_mem[0];
+int16_t *gwenesis_ym2612_buffer = gwenesis_ym2612_buffer_mem[0];
 
 volatile int sn76489_index;
 volatile int sn76489_clock;
@@ -324,7 +340,9 @@ static void setup_genesis_palette(void) {
     }
 }
 
-// Sound processing on Core 1 (sound chips + I2S output)
+// Sound processing on Core 1 (I2S output only)
+// With GWENESIS_AUDIO_ACCURATE=1, sound chips are run during M68K/Z80 emulation
+// Core 1 just submits the already-generated samples to I2S DMA
 static void __scratch_x("sound") sound_core(void) {
     // Allow core 0 to pause this core during flash operations
     multicore_lockout_victim_init();
@@ -335,27 +353,20 @@ static void __scratch_x("sound") sound_core(void) {
     // Signal that we're ready
     sem_release(&render_start_semaphore);
     
-    // Core 1 loop - runs sound chips at 60Hz, output via I2S
-    // The DMA blocking wait provides the timing (888 samples @ 53267 Hz = 16.67ms)
+    // Core 1 loop - synchronized with Core 0 emulation
     while (1) {
-        int lpf = sound_lines_per_frame;
-        
-        // Reset sound chip indices for this frame
-        sn76489_clock = 0;
-        sn76489_index = 0;
-        ym2612_clock = 0;
-        ym2612_index = 0;
-        
-        // Run sound chips to generate samples for full frame
-        for (int line = 0; line < lpf; line++) {
-            int line_clock = (line + 1) * VDP_CYCLES_PER_LINE;
-            gwenesis_SN76489_run(line_clock);
-            ym2612_run(line_clock);
+        // Wait for Core 0 to complete a frame
+        while (!frame_ready) {
+            tight_loop_contents();
         }
+        frame_ready = false;
         
-        // Submit to I2S - blocks until previous frame's audio is done
-        // This naturally limits Core 1 to 60Hz
+        // Submit samples to I2S - samples were already generated during emulation
+        // This blocks until previous frame's DMA is done
         audio_submit();
+        
+        // Signal Core 0 that audio is done
+        audio_done = true;
     }
 }
 
@@ -398,6 +409,28 @@ static void __time_critical_func(emulation_loop)(void) {
 
         PROFILE_FRAME_START();
         
+        // ==================================================================
+        // Frame timing: Wait until 16.67ms has passed since last frame start
+        // This goes at the TOP of the loop so we wait BETWEEN frames
+        // ==================================================================
+        static uint64_t next_frame_time = 0;
+        uint64_t now = time_us_64();
+        if (next_frame_time == 0) {
+            next_frame_time = now + 16667;  // First frame: schedule next
+        }
+        if (now < next_frame_time) {
+            PROFILE_START();
+            while (time_us_64() < next_frame_time) {
+                tight_loop_contents();
+            }
+            PROFILE_END(idle_time);
+        }
+        next_frame_time += 16667;  // Schedule next frame
+        // If we're behind, don't accumulate debt - cap to current time + one frame
+        if (next_frame_time < time_us_64()) {
+            next_frame_time = time_us_64() + 16667;
+        }
+        
         system_clock = 0;
         scan_line = 0;
         
@@ -405,10 +438,14 @@ static void __time_critical_func(emulation_loop)(void) {
         extern volatile int zclk;
         zclk = 0;
         
-        // DAC buffer is continuous stream - no reset needed
+        // Reset sound chip indices for new frame
+        sn76489_clock = 0;
+        sn76489_index = 0;
+        ym2612_clock = 0;
+        ym2612_index = 0;
         
         // ==================================================================
-        // PHASE 1: Run all emulation first (M68K + Z80 + interrupts)
+        // PHASE 1: Run all emulation first (M68K + Z80 + sound chips)
         // This ensures sound chip state is updated at consistent timing
         // Z80 runs every scanline for proper DAC sample timing
         // ==================================================================
@@ -424,6 +461,9 @@ static void __time_critical_func(emulation_loop)(void) {
             
             // Run Z80 every scanline for proper DAC sample playback timing
             z80_run(system_clock + VDP_CYCLES_PER_LINE);
+            
+            // Note: Sound chips are called automatically during YM2612Write/SN76489_Write
+            // with GWENESIS_AUDIO_ACCURATE=1 for cycle-accurate timing
             
             // Handle line counter interrupt
             if (scan_line == 0 || scan_line > screen_height) {
@@ -457,6 +497,12 @@ static void __time_critical_func(emulation_loop)(void) {
             system_clock += VDP_CYCLES_PER_LINE;
         }
         
+        // Generate any remaining audio samples for this frame
+        // This catches up audio to the end of the frame
+        int frame_end_clock = lines_per_frame * VDP_CYCLES_PER_LINE;
+        gwenesis_SN76489_run(frame_end_clock);
+        ym2612_run(frame_end_clock);
+        
         // ==================================================================
         // PHASE 2: Render the frame AFTER emulation is complete
         // This decouples rendering from emulation timing for stable audio
@@ -485,6 +531,33 @@ static void __time_critical_func(emulation_loop)(void) {
         // Update sound parameters for Core 1
         sound_screen_height = screen_height;
         sound_lines_per_frame = lines_per_frame;
+        
+        // ==================================================================
+        // PHASE 3: Frame timing
+        // Signal Core 1 to submit audio, use simple per-frame timing for 60fps
+        // ==================================================================
+        
+        // Wait for previous audio submission to complete (if not done yet)
+        while (!audio_done && frame_num > 0) {
+            tight_loop_contents();
+        }
+        audio_done = false;
+        
+        // Save sample counts for Core 1 BEFORE swapping buffers
+        saved_ym_samples = ym2612_index;
+        saved_sn_samples = sn76489_index;
+        
+        // Set read buffer pointers for Core 1 (current write buffer becomes read buffer)
+        audio_read_sn76489 = gwenesis_sn76489_buffer;
+        audio_read_ym2612 = gwenesis_ym2612_buffer;
+        
+        // Swap to other buffer for next frame's writes
+        audio_write_buffer = 1 - audio_write_buffer;
+        gwenesis_sn76489_buffer = gwenesis_sn76489_buffer_mem[audio_write_buffer];
+        gwenesis_ym2612_buffer = gwenesis_ym2612_buffer_mem[audio_write_buffer];
+        
+        // Signal Core 1 to process audio (from read buffer)
+        frame_ready = true;
         
         frame_num++;
         
