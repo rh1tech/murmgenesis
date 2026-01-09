@@ -410,25 +410,27 @@ static void __time_critical_func(emulation_loop)(void) {
         PROFILE_FRAME_START();
         
         // ==================================================================
-        // Frame timing: Wait until 16.67ms has passed since last frame start
-        // This goes at the TOP of the loop so we wait BETWEEN frames
+        // Frame timing: Only wait if we're ahead of schedule
+        // If we're behind, skip limiting entirely to catch up
         // ==================================================================
         static uint64_t next_frame_time = 0;
         uint64_t now = time_us_64();
         if (next_frame_time == 0) {
-            next_frame_time = now + 16667;  // First frame: schedule next
+            next_frame_time = now;  // First frame: start now
         }
+        
+        // Only wait if we're ahead of schedule
         if (now < next_frame_time) {
             PROFILE_START();
             while (time_us_64() < next_frame_time) {
                 tight_loop_contents();
             }
             PROFILE_END(idle_time);
-        }
-        next_frame_time += 16667;  // Schedule next frame
-        // If we're behind, don't accumulate debt - cap to current time + one frame
-        if (next_frame_time < time_us_64()) {
-            next_frame_time = time_us_64() + 16667;
+            next_frame_time += 16667;  // Schedule next frame
+        } else {
+            // We're behind - don't wait, just reset to now
+            // This prevents debt accumulation while allowing catch-up
+            next_frame_time = now + 16667;
         }
         
         system_clock = 0;
