@@ -659,13 +659,8 @@ typedef struct
 /* emulated chip */
 static YM2612 ym2612;
 
-/* DAC sample buffer for M68K-driven playback (e.g., Sonic SEGA jingle, MK2) */
-/* Stores DAC samples written in bursts to replay during sound generation */
-/* 16384 entries = 64KB, enough for ~18 frames of DAC samples */
-#define DAC_BUFFER_SIZE 16384
-static INT32 dac_buffer[DAC_BUFFER_SIZE];
-static volatile int dac_write_idx = 0;  /* Write index (Core 0) */
-static volatile int dac_read_idx = 0;   /* Read index (Core 1) */
+/* DAC buffer removed - with GWENESIS_AUDIO_ACCURATE=1, DAC writes sync
+ * directly with audio generation, so buffering is not needed */
 
 /* current chip state */
 static INT32  m2,c1,c2;   /* Phase Modulation input for operators 2,3,4 */
@@ -1988,10 +1983,6 @@ void YM2612ResetChip(void)
   ym2612.dacen            = 0;
   ym2612.dacout           = 0;
   ym2612.dac_stable_counter = 0;
-  
-  /* Reset DAC buffer */
-  dac_write_idx = 0;
-  dac_read_idx = 0;
 
   set_timers(0x30);
   ym2612.OPN.ST.TB = 0;
@@ -2011,18 +2002,6 @@ void YM2612ResetChip(void)
     OPNWriteReg(i      ,0);
     OPNWriteReg(i|0x100,0);
   }
-}
-
-/* Reset DAC buffer write index - called from Core 0 at frame start */
-void ym2612_reset_dac_buffer_write(void)
-{
-  dac_write_idx = 0;
-}
-
-/* Reset DAC buffer read index - called from Core 1 before processing */
-void ym2612_reset_dac_buffer_read(void)
-{
-  dac_read_idx = 0;
 }
 
 /* YM2612 execution */
@@ -2059,15 +2038,9 @@ static inline void YM2612Update(int16_t *buffer, int length)
   /* Calculate starting clock for this update batch */
   UINT32 current_clock = ym2612_clock;
   
-  /* DAC resampling - convert ~22KHz input to 53KHz output */
-  /* Input: M68K writes DAC at ~22KHz (varies by game) */
-  /* Output: We generate 53267 samples/sec */
-  /* Ratio: ~0.41, use 16.16 fixed point accumulator */
-  static UINT32 dac_accum = 0;
-  
-  /* Calculate adaptive resample step based on buffer fill level */
-  /* This prevents buffer underrun/overrun by adjusting playback speed */
-  int dac_available = (dac_write_idx - dac_read_idx) & (DAC_BUFFER_SIZE - 1);
+  /* With GWENESIS_AUDIO_ACCURATE=1, DAC writes call ym2612_run() to sync,
+   * so dacout already has the correct value at each point in time.
+   * No buffer or resampling needed - just use dacout directly. */
 
   /* buffering */
   for(i=0; i < length ; i++)
@@ -2075,19 +2048,7 @@ static inline void YM2612Update(int16_t *buffer, int length)
     /* Advance sample clock */
     current_clock += ym2612.divisor;
     
-    /* DAC buffer consumption with resampling */
-    /* Consume DAC samples when we have them, hold last value when empty */
-    if (ym2612.dacen && dac_read_idx != dac_write_idx) {
-      /* We have samples available - consume with simple interpolation */
-      /* Step through buffer at rate that matches input/output ratio */
-      dac_accum += 27500;  /* ~0.42 in 16.16 fixed point (22KHz/53KHz) */
-      if (dac_accum >= 0x10000) {
-        dac_accum -= 0x10000;
-        ym2612.dacout = dac_buffer[dac_read_idx];
-        dac_read_idx = (dac_read_idx + 1) & (DAC_BUFFER_SIZE - 1);
-      }
-    }
-    /* When buffer empty, dacout holds its last value (sample-and-hold) */
+    /* DAC: dacout is set directly by YM2612Write with proper timing */
     
     /* clear outputs */
     out_fm[0] = 0;
@@ -2199,6 +2160,13 @@ void ym2612_run(int target) {
   }
   int ym2612_prev_index = ym2612_index;
   ym2612_index += (target-ym2612_clock) / ym2612.divisor;
+  
+  /* Bounds check - prevent buffer overflow */
+  /* Buffer size is 4096 samples */
+  if (ym2612_index > 4095) {
+    ym2612_index = 4095;
+  }
+  
   if (ym2612_index > ym2612_prev_index) {
     YM2612Update(gwenesis_ym2612_buffer + ym2612_prev_index, ym2612_index-ym2612_prev_index);
     ym2612_clock = ym2612_index*ym2612.divisor;
@@ -2242,15 +2210,10 @@ void YM2612Write(unsigned int a, unsigned int v,  int target)
           {
           case 0x2a: /* DAC data (ym2612) */
             {
+              /* With GWENESIS_AUDIO_ACCURATE=1, ym2612_run() was called above
+               * to sync audio generation. Just set dacout directly. */
               INT32 dac_value = ((int)v - 0x80) << 6; /* convert to 14-bit signed output */
               ym2612.dacout = dac_value;
-              
-              /* Buffer DAC write for M68K-driven playback */
-              int next_idx = (dac_write_idx + 1) & (DAC_BUFFER_SIZE - 1);
-              if (next_idx != dac_read_idx) {  /* Don't overflow */
-                dac_buffer[dac_write_idx] = dac_value;
-                dac_write_idx = next_idx;
-              }
             }
             break;
           case 0x2b: /* DAC Sel  (ym2612) */

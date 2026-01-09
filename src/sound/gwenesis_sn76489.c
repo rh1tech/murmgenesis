@@ -219,6 +219,13 @@ if ( sn76489_clock >= target) return;
 
   int sn76489_prev_index = sn76489_index;
   sn76489_index += (target-sn76489_clock) / gwenesis_SN76489.divisor;
+  
+  /* Bounds check - prevent buffer overflow */
+  /* Buffer size is 4096 samples */
+  if (sn76489_index > 4095) {
+    sn76489_index = 4095;
+  }
+  
   if (sn76489_index > sn76489_prev_index) {
     gwenesis_SN76489_Update(gwenesis_sn76489_buffer + sn76489_prev_index, sn76489_index-sn76489_prev_index);
     sn76489_clock = sn76489_index*gwenesis_SN76489.divisor;

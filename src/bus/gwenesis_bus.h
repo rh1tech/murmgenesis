@@ -43,9 +43,9 @@ __license__ = "GPLv3"
 #define GWENESIS_REFRESH_RATE_PAL 50
 #define GWENESIS_AUDIO_FREQ_PAL 52781
 
-// Disable cycle-accurate audio for better performance
-// When 0, audio is generated in bulk per frame instead of on every register write
-#define GWENESIS_AUDIO_ACCURATE 0
+// Enable cycle-accurate audio for proper DAC sample timing
+// When 1, audio samples are generated at the correct timing during register writes
+#define GWENESIS_AUDIO_ACCURATE 1
 
 #define Z80_FREQ_DIVISOR 15     // Frequency divisor from master clock to Z80 clock (53.693 MHz / 3.58 MHz ≈ 15)
 #define VDP_CYCLES_PER_LINE 3420// VDP Cycles per Line

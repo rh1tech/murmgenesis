@@ -163,8 +163,10 @@ extern int screen_height;
 
 // Audio buffers - keep in regular SRAM (not PSRAM) to avoid contention
 // Use __not_in_flash to ensure they stay in RAM
-static int16_t __not_in_flash("audio") gwenesis_sn76489_buffer_mem[GWENESIS_AUDIO_BUFFER_LENGTH_NTSC * 2];
-static int16_t __not_in_flash("audio") gwenesis_ym2612_buffer_mem[GWENESIS_AUDIO_BUFFER_LENGTH_NTSC * 2];
+// With GWENESIS_AUDIO_ACCURATE=1, we need larger buffers to handle timing variations
+#define AUDIO_BUFFER_SIZE 4096
+static int16_t __not_in_flash("audio") gwenesis_sn76489_buffer_mem[AUDIO_BUFFER_SIZE];
+static int16_t __not_in_flash("audio") gwenesis_ym2612_buffer_mem[AUDIO_BUFFER_SIZE];
 
 // Exported pointers for external access
 int16_t *gwenesis_sn76489_buffer = gwenesis_sn76489_buffer_mem;

@@ -27,15 +27,17 @@
 #include "sound/gwenesis_sn76489.h"
 
 //=============================================================================
-// State - Single buffer, simple DMA
+// State - Double buffer with chained DMA for seamless playback
 //=============================================================================
 
-static uint32_t *dma_buffer = NULL;  // Single DMA buffer (32-bit words = stereo samples)
+static uint32_t *dma_buffer[2] = {NULL, NULL};  // Double DMA buffers
 static int dma_channel = -1;
+static int dma_ctrl_channel = -1;  // Control channel for chaining
 static PIO audio_pio;
 static uint audio_sm;
 static uint32_t dma_transfer_count;
-static bool dma_active = false;
+static volatile int current_buffer = 0;  // Which buffer is being filled
+static volatile bool first_transfer = true;
 
 //=============================================================================
 // I2S Implementation
@@ -91,16 +93,18 @@ void i2s_init(i2s_config_t *config) {
     printf("Audio: Clock divider: %lu.%lu (sys=%lu MHz)\n", 
            divider >> 8u, divider & 0xffu, sys_clk / 1000000);
     
-    // Allocate single DMA buffer
-    dma_buffer = malloc(config->dma_trans_count * sizeof(uint32_t));
-    if (!dma_buffer) {
+    // Allocate double DMA buffers
+    dma_buffer[0] = malloc(config->dma_trans_count * sizeof(uint32_t));
+    dma_buffer[1] = malloc(config->dma_trans_count * sizeof(uint32_t));
+    if (!dma_buffer[0] || !dma_buffer[1]) {
         printf("Audio: Buffer allocation failed!\n");
         return;
     }
-    memset(dma_buffer, 0, config->dma_trans_count * sizeof(uint32_t));
-    config->dma_buf = (uint16_t *)dma_buffer;
+    memset(dma_buffer[0], 0, config->dma_trans_count * sizeof(uint32_t));
+    memset(dma_buffer[1], 0, config->dma_trans_count * sizeof(uint32_t));
+    config->dma_buf = (uint16_t *)dma_buffer[0];
     
-    // Configure DMA
+    // Configure main DMA channel
     dma_channel = dma_claim_unused_channel(true);
     config->dma_channel = dma_channel;
     printf("Audio: Using DMA channel %d\n", dma_channel);
@@ -115,7 +119,7 @@ void i2s_init(i2s_config_t *config) {
         dma_channel,
         &dma_cfg,
         &audio_pio->txf[audio_sm],
-        dma_buffer,
+        dma_buffer[0],
         config->dma_trans_count,
         false  // Don't start yet
     );
@@ -123,30 +127,42 @@ void i2s_init(i2s_config_t *config) {
     // Enable PIO state machine
     pio_sm_set_enabled(audio_pio, audio_sm, true);
     
-    dma_active = false;
-    printf("Audio: I2S ready\n");
+    current_buffer = 0;
+    first_transfer = true;
+    printf("Audio: I2S ready (double-buffered)\n");
 }
 
 void i2s_dma_write(i2s_config_t *config, const int16_t *samples) {
-    // Wait for previous DMA to complete (this is the timing mechanism!)
-    if (dma_active) {
-        dma_channel_wait_for_finish_blocking(dma_channel);
-    }
+    // Double buffer strategy:
+    // - Fill the "next" buffer while current one is playing
+    // - Wait for current DMA to finish, then immediately start next
+    // - This eliminates gaps between buffers
     
-    // Copy samples to DMA buffer
+    int fill_buffer = current_buffer;
+    uint32_t *buf = dma_buffer[fill_buffer];
+    
+    // Copy samples to the buffer we'll use next
     if (config->volume == 0) {
-        memcpy(dma_buffer, samples, dma_transfer_count * sizeof(uint32_t));
+        memcpy(buf, samples, dma_transfer_count * sizeof(uint32_t));
     } else {
-        int16_t *buf16 = (int16_t *)dma_buffer;
+        int16_t *buf16 = (int16_t *)buf;
         for (uint32_t i = 0; i < dma_transfer_count * 2; i++) {
             buf16[i] = samples[i] >> config->volume;
         }
     }
     
-    // Start DMA transfer
-    dma_channel_set_read_addr(dma_channel, dma_buffer, false);
+    // Wait for any ongoing DMA to complete
+    if (!first_transfer) {
+        dma_channel_wait_for_finish_blocking(dma_channel);
+    }
+    first_transfer = false;
+    
+    // Immediately start the next transfer (no gap!)
+    dma_channel_set_read_addr(dma_channel, buf, false);
     dma_channel_set_trans_count(dma_channel, dma_transfer_count, true);
-    dma_active = true;
+    
+    // Swap buffers for next call
+    current_buffer = 1 - current_buffer;
 }
 
 void i2s_volume(i2s_config_t *config, uint8_t volume) {
