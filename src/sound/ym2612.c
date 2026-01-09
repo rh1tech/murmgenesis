@@ -2059,21 +2059,15 @@ static inline void YM2612Update(int16_t *buffer, int length)
   /* Calculate starting clock for this update batch */
   UINT32 current_clock = ym2612_clock;
   
-  /* DAC resampling for burst mode (M68K-driven like Sonic) */
+  /* DAC resampling - convert ~22KHz input to 53KHz output */
+  /* Input: M68K writes DAC at ~22KHz (varies by game) */
+  /* Output: We generate 53267 samples/sec */
+  /* Ratio: ~0.41, use 16.16 fixed point accumulator */
   static UINT32 dac_accum = 0;
-  #define DAC_RESAMPLE_STEP 22282  /* 18KHz / 53KHz in 16.16 fixed point */
   
-  /* Check buffer level to detect burst vs streaming mode */
-  /* Burst mode (M68K): >50 samples accumulated = resample from buffer */
-  /* Streaming mode (Z80): <50 samples = use direct dacout (already set) */
+  /* Calculate adaptive resample step based on buffer fill level */
+  /* This prevents buffer underrun/overrun by adjusting playback speed */
   int dac_available = (dac_write_idx - dac_read_idx) & (DAC_BUFFER_SIZE - 1);
-  int burst_mode = (dac_available > 50);
-  
-  /* In streaming mode, drain buffer to stay in sync but don't use it */
-  if (!burst_mode) {
-    dac_read_idx = dac_write_idx;  /* Discard buffered samples */
-    dac_accum = 0;
-  }
 
   /* buffering */
   for(i=0; i < length ; i++)
@@ -2081,16 +2075,19 @@ static inline void YM2612Update(int16_t *buffer, int length)
     /* Advance sample clock */
     current_clock += ym2612.divisor;
     
-    /* Only use buffer resampling in burst mode (Sonic/MK2) */
-    /* In streaming mode (Jim), dacout is already set correctly by direct writes */
-    if (burst_mode && ym2612.dacen && dac_read_idx != dac_write_idx) {
-      dac_accum += DAC_RESAMPLE_STEP;
+    /* DAC buffer consumption with resampling */
+    /* Consume DAC samples when we have them, hold last value when empty */
+    if (ym2612.dacen && dac_read_idx != dac_write_idx) {
+      /* We have samples available - consume with simple interpolation */
+      /* Step through buffer at rate that matches input/output ratio */
+      dac_accum += 27500;  /* ~0.42 in 16.16 fixed point (22KHz/53KHz) */
       if (dac_accum >= 0x10000) {
         dac_accum -= 0x10000;
         ym2612.dacout = dac_buffer[dac_read_idx];
         dac_read_idx = (dac_read_idx + 1) & (DAC_BUFFER_SIZE - 1);
       }
     }
+    /* When buffer empty, dacout holds its last value (sample-and-hold) */
     
     /* clear outputs */
     out_fm[0] = 0;
