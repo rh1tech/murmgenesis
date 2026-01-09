@@ -99,16 +99,9 @@ set(GWENESIS_SOURCES
     src/savestate/gwenesis_savestate.c
 )
 
-# Apply aggressive optimizations to performance-critical code
-set_source_files_properties(
-    src/cpus/M68K/m68kcpu.c
-    src/vdp/gwenesis_vdp_gfx.c
-    src/vdp/gwenesis_vdp_mem.c
-    src/sound/z80inst.c
-    src/sound/ym2612.c
-    src/sound/gwenesis_sn76489.c
-    src/main.c
-    PROPERTIES COMPILE_FLAGS "-O3 -ffast-math -funroll-loops -finline-functions"
+# Apply aggressive optimizations to M68K CPU
+set_source_files_properties(src/cpus/M68K/m68kcpu.c PROPERTIES
+    COMPILE_FLAGS "-O3 -ffast-math -funroll-loops -finline-functions"
 )
 
 add_executable(murmgenesis

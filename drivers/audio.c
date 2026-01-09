@@ -300,39 +300,38 @@ void audio_submit(void) {
     if (!audio_enabled || available == 0 || !ym_buffer || !sn_buffer) {
         memset(mixed_buffer, 0, TARGET_SAMPLES_NTSC * 2 * sizeof(int16_t));
         i2s_dma_write_count(&i2s_config, mixed_buffer, TARGET_SAMPLES_NTSC);
+        prev_sample = 0;
         return;
     }
     
-    // Mix sound chips - optimized loop
+    // Mix sound chips
     int16_t last_sample = 0;
-    int min_samples = (ym_samples < sn_samples) ? ym_samples : sn_samples;
+    int16_t prev_frame_last = last_frame_sample;
     
-    // Process samples where both buffers have data
-    for (int i = 0; i < min_samples; i++) {
-        int32_t mixed = ym_buffer[i] + sn_buffer[i];
-        mixed = (mixed * master_volume) >> 7;
-        
-        // Fast clamp
-        if (mixed > 32767) mixed = 32767;
-        else if (mixed < -32768) mixed = -32768;
-        
-        last_sample = (int16_t)mixed;
-        mixed_buffer[i * 2] = last_sample;
-        mixed_buffer[i * 2 + 1] = last_sample;
-    }
-    
-    // Process remaining samples (only one buffer has data)
-    for (int i = min_samples; i < available; i++) {
+    for (int i = 0; i < available; i++) {
         int32_t mixed = 0;
-        if (i < ym_samples) mixed = ym_buffer[i];
-        else if (i < sn_samples) mixed = sn_buffer[i];
+        if (i < ym_samples) mixed += ym_buffer[i];
+        if (i < sn_samples) mixed += sn_buffer[i];
         
         mixed = (mixed * master_volume) >> 7;
         
+        // Clamp to 16-bit range
         if (mixed > 32767) mixed = 32767;
-        else if (mixed < -32768) mixed = -32768;
+        if (mixed < -32768) mixed = -32768;
         
-        last_sample = (int16_t)mixed;
+        int16_t current_sample = (int16_t)mixed;
+        
+        // Crossfade first FADE_SAMPLES from previous frame's last sample
+        if (i < FADE_SAMPLES) {
+            int32_t alpha = (i * 256) / FADE_SAMPLES;
+            last_sample = (int16_t)(((prev_frame_last * (256 - alpha)) + (current_sample * alpha)) >> 8);
+        } else {
+            last_sample = current_sample;
+        }
+        
+        prev_sample = last_sample;
+        
+        // Stereo (mono duplicated)
         mixed_buffer[i * 2] = last_sample;
         mixed_buffer[i * 2 + 1] = last_sample;
     }
@@ -342,6 +341,9 @@ void audio_submit(void) {
         mixed_buffer[i * 2] = last_sample;
         mixed_buffer[i * 2 + 1] = last_sample;
     }
+    
+    // Save last sample for next frame's crossfade
+    last_frame_sample = last_sample;
     
     // Always send fixed sample count for consistent timing
     i2s_dma_write_count(&i2s_config, mixed_buffer, TARGET_SAMPLES_NTSC);

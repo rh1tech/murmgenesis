@@ -410,27 +410,30 @@ static void __time_critical_func(emulation_loop)(void) {
         PROFILE_FRAME_START();
         
         // ==================================================================
-        // Frame timing: Only wait if we're ahead of schedule
-        // If we're behind, skip limiting entirely to catch up
+        // Frame timing: Only limit if we're running FASTER than 60 FPS
+        // If emulation is slow, don't add any delay - let it run full speed
         // ==================================================================
         static uint64_t next_frame_time = 0;
         uint64_t now = time_us_64();
-        if (next_frame_time == 0) {
-            next_frame_time = now;  // First frame: start now
-        }
         
-        // Only wait if we're ahead of schedule
-        if (now < next_frame_time) {
+        // Target 65 FPS (15385µs) to give headroom - ensures we never dip below 60
+        #define FRAME_TIME_US 15385
+        
+        if (next_frame_time == 0) {
+            // First frame: initialize timing
+            next_frame_time = now + FRAME_TIME_US;
+        } else if (now < next_frame_time) {
+            // We're AHEAD of schedule (running fast) - wait to maintain target fps
             PROFILE_START();
             while (time_us_64() < next_frame_time) {
                 tight_loop_contents();
             }
             PROFILE_END(idle_time);
-            next_frame_time += 16667;  // Schedule next frame
+            next_frame_time += FRAME_TIME_US;
         } else {
-            // We're behind - don't wait, just reset to now
-            // This prevents debt accumulation while allowing catch-up
-            next_frame_time = now + 16667;
+            // We're BEHIND schedule (running slow) - don't wait, reset timing
+            // This prevents accumulated delay from slowing us further
+            next_frame_time = now + FRAME_TIME_US;
         }
         
         system_clock = 0;
@@ -535,15 +538,9 @@ static void __time_critical_func(emulation_loop)(void) {
         sound_lines_per_frame = lines_per_frame;
         
         // ==================================================================
-        // PHASE 3: Frame timing
-        // Signal Core 1 to submit audio, use simple per-frame timing for 60fps
+        // PHASE 3: Signal Core 1 to submit audio
+        // Core 1 handles DMA synchronization - we don't wait here
         // ==================================================================
-        
-        // Wait for previous audio submission to complete (if not done yet)
-        while (!audio_done && frame_num > 0) {
-            tight_loop_contents();
-        }
-        audio_done = false;
         
         // Save sample counts for Core 1 BEFORE swapping buffers
         saved_ym_samples = ym2612_index;
@@ -559,6 +556,7 @@ static void __time_critical_func(emulation_loop)(void) {
         gwenesis_ym2612_buffer = gwenesis_ym2612_buffer_mem[audio_write_buffer];
         
         // Signal Core 1 to process audio (from read buffer)
+        // Core 1's DMA wait provides natural frame pacing when running fast
         frame_ready = true;
         
         frame_num++;
