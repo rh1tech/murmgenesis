@@ -42,12 +42,20 @@ static uint32_t __attribute__((aligned(DMA_RING_SIZE * 4))) dma_ring_buffer[DMA_
 // Write position in ring buffer (in samples)
 static volatile uint32_t ring_write_pos = 0;
 
+// Pre-roll: buffer this many frames before starting DMA
+#define PREROLL_FRAMES 3
+static volatile int preroll_count = 0;
+
 static int dma_channel = -1;
 static PIO audio_pio;
 static uint audio_sm;
 static uint32_t dma_transfer_count;
 
 static volatile bool audio_running = false;
+
+// Forward declarations for DMA position tracking
+static inline uint32_t get_dma_read_pos(void);
+static inline int32_t get_buffer_headroom(void);
 
 //=============================================================================
 // I2S Implementation
@@ -146,7 +154,7 @@ void i2s_init(i2s_config_t *config) {
         &cfg,
         &audio_pio->txf[audio_sm],
         dma_ring_buffer,
-        0xFFFFFFFF,  // Transfer "forever" (will wrap due to ring)
+        0xFFFFFFFF,  // Transfer "forever" - ring wraps read address
         false  // Don't start yet
     );
     
@@ -155,19 +163,29 @@ void i2s_init(i2s_config_t *config) {
     
     // Initialize state
     ring_write_pos = 0;
+    preroll_count = 0;
     audio_running = false;
     
-    printf("Audio: I2S ready (ring buffer DMA)\n");
+    printf("Audio: I2S ready (ring buffer DMA with %d frame pre-roll)\n", PREROLL_FRAMES);
 }
 
 void i2s_dma_write_count(i2s_config_t *config, const int16_t *samples, uint32_t sample_count) {
     // RING BUFFER:
     // - DMA reads continuously from ring buffer
     // - CPU writes ahead of DMA read position
-    // - No synchronization needed - just write and advance position
+    // - Must not overwrite samples DMA hasn't read yet!
     
     if (sample_count > dma_transfer_count) sample_count = dma_transfer_count;
     if (sample_count == 0) sample_count = 1;
+    
+    // CRITICAL: Wait if buffer is too full (prevents overwriting unread samples)
+    // Leave at least 2 frames of headroom margin
+    if (audio_running) {
+        const int32_t max_headroom = DMA_RING_SIZE - (sample_count * 2);
+        while (get_buffer_headroom() > max_headroom) {
+            tight_loop_contents();
+        }
+    }
     
     // Write samples to ring buffer at current write position
     uint32_t *write_ptr = &dma_ring_buffer[ring_write_pos];
@@ -197,9 +215,14 @@ void i2s_dma_write_count(i2s_config_t *config, const int16_t *samples, uint32_t 
     ring_write_pos = (ring_write_pos + sample_count) & (DMA_RING_SIZE - 1);
     
     if (!audio_running) {
-        // FIRST FRAME: Start DMA
-        dma_channel_start(dma_channel);
-        audio_running = true;
+        preroll_count++;
+        if (preroll_count >= PREROLL_FRAMES) {
+            // We've buffered enough frames ahead - NOW start DMA
+            // DMA will start reading from position 0, but we've already
+            // written PREROLL_FRAMES worth of data ahead
+            dma_channel_start(dma_channel);
+            audio_running = true;
+        }
     }
 }
 
@@ -226,7 +249,7 @@ void i2s_decrease_volume(i2s_config_t *config) {
 
 static bool audio_initialized = false;
 static bool audio_enabled = true;
-static int master_volume = 128;  // 0-128 (max volume)
+static int master_volume = 100;  // 0-128
 static i2s_config_t i2s_config;
 
 // Startup mute: output silence for first N frames to let hardware settle
@@ -253,6 +276,7 @@ bool audio_init(void) {
     lpf_state = 0;
     dma_channel = -1;
     ring_write_pos = 0;
+    preroll_count = 0;
     startup_frame_counter = 0;
     
     i2s_config = i2s_get_default_config();
@@ -335,6 +359,25 @@ static int16_t prev_sample = 0;
 static int32_t first_click_idx = -1;
 static int16_t click_before = 0, click_after = 0;
 
+// Get DMA read position from hardware
+static inline uint32_t get_dma_read_pos(void) {
+    if (dma_channel < 0) return 0;
+    // DMA read address tells us where it's reading from
+    uint32_t read_addr = dma_channel_hw_addr(dma_channel)->read_addr;
+    uint32_t base = (uint32_t)dma_ring_buffer;
+    // Convert byte offset to sample index
+    return ((read_addr - base) >> 2) & (DMA_RING_SIZE - 1);
+}
+
+// Calculate samples ahead of DMA (positive = good, negative = DMA caught up)
+static inline int32_t get_buffer_headroom(void) {
+    if (!audio_running) return DMA_RING_SIZE;
+    uint32_t read_pos = get_dma_read_pos();
+    int32_t ahead = (int32_t)ring_write_pos - (int32_t)read_pos;
+    if (ahead < 0) ahead += DMA_RING_SIZE;
+    return ahead;
+}
+
 void audio_submit(void) {
     if (!audio_initialized) return;
     
@@ -388,8 +431,18 @@ void audio_submit(void) {
         
         int16_t current_sample = (int16_t)mixed;
         
-        // Simple single-pole low-pass filter to smooth transitions
-        lpf_state = (current_sample + lpf_state * 3) >> 2;  // 25% new, 75% old
+        // Detect sudden drops (end of PCM sample) and smooth them
+        int32_t delta = current_sample - (int16_t)lpf_state;
+        if (delta < 0) delta = -delta;
+        
+        // If amplitude drops suddenly by more than threshold, use stronger filtering
+        if (delta > 1000) {
+            // Strong smoothing for sudden drops (likely PCM sample ending)
+            lpf_state = (current_sample + lpf_state * 7) >> 3;  // 12.5% new, 87.5% old
+        } else {
+            // Normal low-pass filter
+            lpf_state = (current_sample + lpf_state * 3) >> 2;  // 25% new, 75% old
+        }
         current_sample = (int16_t)lpf_state;
         
         // Crossfade first FADE_SAMPLES from previous frame's last sample
@@ -420,6 +473,14 @@ void audio_submit(void) {
     
     // Save last sample for next frame's crossfade
     last_frame_sample = last_sample;
+    
+    // DEBUG: Track buffer headroom
+    audio_frame_count++;
+    if (audio_running && (audio_frame_count % 300) == 0) {
+        int32_t headroom = get_buffer_headroom();
+        printf("Audio: headroom=%ld samples, ym=%d sn=%d\n", 
+               headroom, saved_ym_samples, saved_sn_samples);
+    }
     
     // Always send fixed sample count for consistent timing
     i2s_dma_write_count(&i2s_config, mixed_buffer, TARGET_SAMPLES_NTSC);

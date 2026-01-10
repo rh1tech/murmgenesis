@@ -1473,9 +1473,30 @@ INLINE void refresh_fc_eg_chan(FM_CH *CH )
 
 #define volume_calc(OP) ((OP)->vol_out + (AM & (OP)->AMmask))
 
+/* C version of op_calc for debugging - disable assembly version */
+#if 1  /* Use C version to test for assembly bugs */
+INLINE signed int op_calc(UINT32 phase, unsigned int env, unsigned int pm)
+{
+  UINT32 p;
+  /* Match assembly: ((phase >> SIN_BITS) + (pm >> 1)) & SIN_MASK */
+  p = (env<<3) + sin_tab[ ( (phase >> SIN_BITS) + (pm >> 1) ) & SIN_MASK ];
+  if (p >= TL_TAB_LEN) return 0;
+  return tl_tab[p];
+}
+
+INLINE signed int op_calc1(UINT32 phase, unsigned int env, unsigned int pm)
+{
+  UINT32 p;
+  /* Match assembly: ((phase + pm) >> SIN_BITS) & SIN_MASK */
+  p = (env<<3) + sin_tab[ ( (phase + pm) >> SIN_BITS ) & SIN_MASK ];
+  if (p >= TL_TAB_LEN) return 0;
+  return tl_tab[p];
+}
+#else
 /* Assembly-optimized op_calc functions in ym2612_opt.S */
 extern signed int op_calc(UINT32 phase, unsigned int env, unsigned int pm);
 extern signed int op_calc1(UINT32 phase, unsigned int env, unsigned int pm);
+#endif
 
 INLINE void chan_calc(FM_CH *CH, int num)
 {
@@ -2166,6 +2187,16 @@ static inline void YM2612Update(int16_t *buffer, int length)
     //rt += out_fm[4];
     lt += out_fm[5];
    // rt += out_fm[5];
+
+    /* DEBUG: Test each channel individually - set to 1-6 to hear only that channel, 0 for all */
+    #define DEBUG_SOLO_CHANNEL 0  // 0=all, 1-6=solo that channel
+    #if DEBUG_SOLO_CHANNEL > 0
+    for (int ch = 0; ch < 6; ch++) {
+      if (ch != (DEBUG_SOLO_CHANNEL - 1)) out_fm[ch] = 0;
+    }
+    #endif
+    
+    lt = out_fm[0] + out_fm[1] + out_fm[2] + out_fm[3] + out_fm[4] + out_fm[5];
 
     /* Scale down from 6-channel mix (max ±49152) to 16-bit range (±32767) */
     /* Divide by 2 to prevent overflow: max ±24576, well within int16 range */
