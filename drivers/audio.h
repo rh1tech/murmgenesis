@@ -19,7 +19,7 @@
 #include <hardware/dma.h>
 
 // Audio sample rate - Genesis NTSC runs at ~53267 Hz
-#define AUDIO_SAMPLE_RATE 53267
+#define AUDIO_SAMPLE_RATE 53280  // 888 samples/frame × 60 fps
 
 // Audio buffer size - enough for both NTSC (~888) and PAL (~1061) with headroom
 #define AUDIO_BUFFER_SAMPLES 1120
