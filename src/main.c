@@ -320,7 +320,7 @@ static void genesis_init(void) {
     YM2612Config(9);
     
     // Initialize PSG
-    gwenesis_SN76489_Init(3579545, 873 * 61, AUDIO_FREQ_DIVISOR);
+    gwenesis_SN76489_Init(3579545, 888 * 60, AUDIO_FREQ_DIVISOR);
     gwenesis_SN76489_Reset();
     
     // Initialize VDP
@@ -517,7 +517,7 @@ static void __time_critical_func(emulation_loop)(void) {
         // Generate any remaining audio samples for this frame
         // Always generate TARGET_SAMPLES_PER_FRAME samples regardless of emulation speed
         // This keeps audio at constant speed even when video/emulation is slow
-        #define TARGET_SAMPLES_PER_FRAME 873
+        #define TARGET_SAMPLES_PER_FRAME 888
         #define AUDIO_TARGET_CLOCK (TARGET_SAMPLES_PER_FRAME * AUDIO_FREQ_DIVISOR)
         gwenesis_SN76489_run(AUDIO_TARGET_CLOCK);
         ym2612_run(AUDIO_TARGET_CLOCK);

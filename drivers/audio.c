@@ -26,26 +26,25 @@
 #include "sound/gwenesis_sn76489.h"
 
 //=============================================================================
-// State - Triple-buffered DMA for gapless, click-free playback
+// State - Double-buffered DMA with IRQ for gapless playback
 //=============================================================================
 
-// TRIPLE BUFFERING:
-// - Buffer 0, 1, 2 in a ring
-// - DMA ping-pongs using control channel that reads next buffer address
-// - CPU always writes to the buffer that's 2 steps ahead
-// - This ensures we NEVER write to a buffer DMA might be reading
+// DOUBLE BUFFERING with IRQ:
+// - Buffer 0 and 1 alternate
+// - DMA plays one buffer, IRQ fires when done and starts the other
+// - CPU writes to the buffer that's NOT being played
+// - If CPU is too slow, we wait for DMA to finish current buffer
 
-#define DMA_BUFFER_SIZE 873
+#define DMA_BUFFER_SIZE 888
 static uint32_t dma_buffer_0[DMA_BUFFER_SIZE];
 static uint32_t dma_buffer_1[DMA_BUFFER_SIZE];
-static uint32_t dma_buffer_2[DMA_BUFFER_SIZE];  // Third buffer for safety
-static uint32_t *dma_buffers[3] = {NULL, NULL, NULL};
 
-// Ring buffer indices
-static volatile int cpu_write_idx = 0;    // Buffer CPU is writing to
-static volatile int dma_play_idx = 0;     // Buffer DMA is currently playing
+// Which buffer DMA is currently playing (0 or 1)
+static volatile int dma_playing = 0;
+// Which buffer CPU should write to next (0 or 1)
+static volatile int cpu_buffer = 0;
 
-static int dma_channel_data = -1;   // DMA channel for audio data
+static int dma_channel = -1;
 static PIO audio_pio;
 static uint audio_sm;
 static uint32_t dma_transfer_count;
@@ -57,7 +56,7 @@ static volatile bool audio_running = false;
 //=============================================================================
 
 i2s_config_t i2s_get_default_config(void) {
-    // Use 873 samples per frame for 61fps audio timing
+    // Use 888 samples per frame for 60fps audio timing
     // This matches TARGET_SAMPLES_NTSC for consistent DMA transfers
     i2s_config_t config = {
         .sample_freq = AUDIO_SAMPLE_RATE,
@@ -67,7 +66,7 @@ i2s_config_t i2s_get_default_config(void) {
         .pio = pio0,
         .sm = 0,
         .dma_channel = 0,
-        .dma_trans_count = 873,
+        .dma_trans_count = 888,
         .dma_buf = NULL,
         .volume = 0,
     };
@@ -77,24 +76,22 @@ i2s_config_t i2s_get_default_config(void) {
 // DMA IRQ handler - called when audio buffer finishes playing
 static void audio_dma_irq_handler(void) {
     // Clear the interrupt first (we use DMA_IRQ_1 so clear ints1)
-    dma_hw->ints1 = (1u << dma_channel_data);
+    dma_hw->ints1 = (1u << dma_channel);
     
     // Don't do anything if audio isn't running yet
     if (!audio_running) return;
     
-    // Advance to next buffer
-    dma_play_idx = (dma_play_idx + 1) % 3;
-    
-    // Make sure buffer pointer is valid
-    if (dma_buffers[dma_play_idx] == NULL) return;
+    // Switch to the other buffer
+    dma_playing = 1 - dma_playing;
+    uint32_t *next_buf = (dma_playing == 0) ? dma_buffer_0 : dma_buffer_1;
     
     // Start playing the next buffer
-    dma_channel_set_read_addr(dma_channel_data, dma_buffers[dma_play_idx], false);
-    dma_channel_set_trans_count(dma_channel_data, dma_transfer_count, true);  // Start!
+    dma_channel_set_read_addr(dma_channel, next_buf, false);
+    dma_channel_set_trans_count(dma_channel, dma_transfer_count, true);  // Start!
 }
 
 void i2s_init(i2s_config_t *config) {
-    printf("Audio: Initializing I2S with triple-buffered DMA...\n");
+    printf("Audio: Initializing I2S with double-buffered DMA + IRQ...\n");
     printf("Audio: Sample rate: %lu Hz, Buffer: %lu samples\n", 
            config->sample_freq, config->dma_trans_count);
     
@@ -138,16 +135,12 @@ void i2s_init(i2s_config_t *config) {
     printf("Audio: Clock divider: %lu.%lu (sys=%lu MHz)\n", 
            divider >> 8u, divider & 0xffu, sys_clk / 1000000);
     
-    // Initialize triple buffers with silence
+    // Initialize double buffers with silence
     memset(dma_buffer_0, 0, sizeof(dma_buffer_0));
     memset(dma_buffer_1, 0, sizeof(dma_buffer_1));
-    memset(dma_buffer_2, 0, sizeof(dma_buffer_2));
-    dma_buffers[0] = dma_buffer_0;
-    dma_buffers[1] = dma_buffer_1;
-    dma_buffers[2] = dma_buffer_2;
-    config->dma_buf = (uint16_t *)dma_buffers[0];
+    config->dma_buf = (uint16_t *)dma_buffer_0;
     
-    // Use fixed DMA channel 10 for audio data
+    // Use fixed DMA channel 10 for audio
     dma_channel_abort(10);
     while (dma_channel_is_busy(10)) {
         tight_loop_contents();
@@ -155,30 +148,29 @@ void i2s_init(i2s_config_t *config) {
     
     dma_channel_unclaim(10);
     dma_channel_claim(10);
-    dma_channel_data = 10;
-    config->dma_channel = dma_channel_data;
-    printf("Audio: Using DMA channel %d\n", dma_channel_data);
+    dma_channel = 10;
+    config->dma_channel = dma_channel;
+    printf("Audio: Using DMA channel %d\n", dma_channel);
     
-    // Configure DATA channel - transfers audio samples to PIO
-    dma_channel_config cfg_data = dma_channel_get_default_config(dma_channel_data);
-    channel_config_set_read_increment(&cfg_data, true);
-    channel_config_set_write_increment(&cfg_data, false);
-    channel_config_set_transfer_data_size(&cfg_data, DMA_SIZE_32);
-    channel_config_set_dreq(&cfg_data, pio_get_dreq(audio_pio, audio_sm, true));
-    // No chaining - we use IRQ to set up next buffer
+    // Configure DMA channel - transfers audio samples to PIO
+    dma_channel_config cfg = dma_channel_get_default_config(dma_channel);
+    channel_config_set_read_increment(&cfg, true);
+    channel_config_set_write_increment(&cfg, false);
+    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
+    channel_config_set_dreq(&cfg, pio_get_dreq(audio_pio, audio_sm, true));
     
     dma_channel_configure(
-        dma_channel_data,
-        &cfg_data,
+        dma_channel,
+        &cfg,
         &audio_pio->txf[audio_sm],
-        dma_buffers[0],
+        dma_buffer_0,
         config->dma_trans_count,
         false  // Don't start yet
     );
     
     // Set up IRQ handler for DMA completion
     // Use DMA_IRQ_1 to avoid conflict with HDMI which may use DMA_IRQ_0
-    dma_channel_set_irq1_enabled(dma_channel_data, true);
+    dma_channel_set_irq1_enabled(dma_channel, true);
     irq_set_exclusive_handler(DMA_IRQ_1, audio_dma_irq_handler);
     irq_set_enabled(DMA_IRQ_1, true);
     
@@ -186,24 +178,25 @@ void i2s_init(i2s_config_t *config) {
     pio_sm_set_enabled(audio_pio, audio_sm, true);
     
     // Initialize state
-    cpu_write_idx = 2;  // CPU starts writing to buffer 2 (0 and 1 are for DMA)
-    dma_play_idx = 0;   // DMA starts with buffer 0
+    dma_playing = 0;
+    cpu_buffer = 0;
     audio_running = false;
     
-    printf("Audio: I2S ready (triple-buffered DMA)\n");
+    printf("Audio: I2S ready (double-buffered DMA + IRQ)\n");
 }
 
 void i2s_dma_write_count(i2s_config_t *config, const int16_t *samples, uint32_t sample_count) {
-    // TRIPLE BUFFERING with IRQ:
-    // - DMA plays buffer N, IRQ fires and starts buffer N+1
-    // - CPU fills buffer N+2 (always 2 ahead of DMA)
-    // - This gives us a full buffer of margin - no race conditions
+    // DOUBLE BUFFERING with IRQ:
+    // - CPU fills the buffer that DMA is NOT currently playing
+    // - When done, wait for DMA to switch (if it hasn't already)
+    // - The IRQ handler automatically starts the next buffer
     
     if (sample_count > dma_transfer_count) sample_count = dma_transfer_count;
     if (sample_count == 0) sample_count = 1;
     
-    // Get the buffer we're writing to (always 2 ahead of DMA)
-    uint32_t *buf = dma_buffers[cpu_write_idx];
+    // Determine which buffer to write to (opposite of what DMA is playing)
+    int write_buf = 1 - dma_playing;
+    uint32_t *buf = (write_buf == 0) ? dma_buffer_0 : dma_buffer_1;
     
     // Fill the buffer
     if (config->volume == 0) {
@@ -215,29 +208,17 @@ void i2s_dma_write_count(i2s_config_t *config, const int16_t *samples, uint32_t 
         }
     }
     
-    // Memory barrier to ensure writes are visible
+    // Memory barrier to ensure writes are visible before DMA reads
     __dmb();
     
     if (!audio_running) {
-        // FIRST FRAME: Initialize all buffers and start DMA
-        // Copy first frame to all 3 buffers
-        memcpy(dma_buffers[0], buf, sample_count * sizeof(uint32_t));
-        memcpy(dma_buffers[1], buf, sample_count * sizeof(uint32_t));
-        
-        // Start DMA with buffer 0
-        dma_channel_set_read_addr(dma_channel_data, dma_buffers[0], false);
-        dma_channel_set_trans_count(dma_channel_data, sample_count, true);  // Start!
-        
+        // FIRST FRAME: Start DMA with buffer 0
+        dma_playing = 0;
+        dma_channel_set_read_addr(dma_channel, dma_buffer_0, false);
+        dma_channel_set_trans_count(dma_channel, sample_count, true);  // Start!
         audio_running = true;
-        dma_play_idx = 0;
-        cpu_write_idx = 2;  // Next write goes to buffer 2
-        return;
     }
-    
-    // NORMAL OPERATION: Triple buffering means we NEVER wait!
-    // IRQ handler chains the buffers automatically
-    // Just advance CPU write index to next buffer
-    cpu_write_idx = (cpu_write_idx + 1) % 3;
+    // IRQ handler takes care of switching buffers - no waiting needed here
 }
 
 void i2s_dma_write(i2s_config_t *config, const int16_t *samples) {
@@ -287,13 +268,10 @@ bool audio_init(void) {
     // Reset all state variables first
     audio_initialized = false;
     audio_running = false;
-    cpu_write_idx = 2;
-    dma_play_idx = 0;
+    dma_playing = 0;
+    cpu_buffer = 0;
     lpf_state = 0;
-    dma_buffers[0] = NULL;
-    dma_buffers[1] = NULL;
-    dma_buffers[2] = NULL;
-    dma_channel_data = -1;
+    dma_channel = -1;
     startup_frame_counter = 0;
     
     i2s_config = i2s_get_default_config();
@@ -316,7 +294,7 @@ bool audio_is_initialized(void) {
 }
 
 // Target samples per frame for consistent DMA timing
-#define TARGET_SAMPLES_NTSC 873
+#define TARGET_SAMPLES_NTSC 888
 #define FADE_SAMPLES 32  // Samples to crossfade at frame boundary (increased for smoother transition)
 
 // Simple 1-pole low-pass filter coefficient (256 = no filter, lower = more smoothing)
