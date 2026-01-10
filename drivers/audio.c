@@ -412,46 +412,24 @@ void audio_submit(void) {
         return;
     }
     
-    // Simple mixing without complex filtering
+    // Simple mixing - minimal processing to preserve audio timing
     int16_t last_sample = 0;
-    int16_t prev_frame_last = last_frame_sample;
     
     for (int i = 0; i < available; i++) {
         int32_t mixed = 0;
         
-        // Only read from valid indices
+        // Mix both sound chips
         if (i < ym_samples && ym_buffer) mixed += ym_buffer[i];
         if (i < sn_samples && sn_buffer) mixed += sn_buffer[i];
         
+        // Apply volume
         mixed = (mixed * master_volume) >> 7;
         
         // Clamp to 16-bit range
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
         
-        int16_t current_sample = (int16_t)mixed;
-        
-        // Detect sudden drops (end of PCM sample) and smooth them
-        int32_t delta = current_sample - (int16_t)lpf_state;
-        if (delta < 0) delta = -delta;
-        
-        // If amplitude drops suddenly by more than threshold, use stronger filtering
-        if (delta > 1000) {
-            // Strong smoothing for sudden drops (likely PCM sample ending)
-            lpf_state = (current_sample + lpf_state * 7) >> 3;  // 12.5% new, 87.5% old
-        } else {
-            // Normal low-pass filter
-            lpf_state = (current_sample + lpf_state * 3) >> 2;  // 25% new, 75% old
-        }
-        current_sample = (int16_t)lpf_state;
-        
-        // Crossfade first FADE_SAMPLES from previous frame's last sample
-        if (i < FADE_SAMPLES) {
-            int32_t alpha = (i * 256) / FADE_SAMPLES;
-            last_sample = (int16_t)(((prev_frame_last * (256 - alpha)) + (current_sample * alpha)) >> 8);
-        } else {
-            last_sample = current_sample;
-        }
+        last_sample = (int16_t)mixed;
         
         // Stereo (mono duplicated)
         mixed_buffer[i * 2] = last_sample;

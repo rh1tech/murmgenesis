@@ -510,8 +510,7 @@ static void __time_critical_func(emulation_loop)(void) {
         }
         
         // Generate any remaining audio samples for this frame
-        // Always generate TARGET_SAMPLES_PER_FRAME samples regardless of emulation speed
-        // This keeps audio at constant speed even when video/emulation is slow
+        // Fixed 888 samples per NTSC frame (53280 Hz / 60 fps)
         #define TARGET_SAMPLES_PER_FRAME 888
         #define AUDIO_TARGET_CLOCK (TARGET_SAMPLES_PER_FRAME * AUDIO_FREQ_DIVISOR)
         PROFILE_START();
