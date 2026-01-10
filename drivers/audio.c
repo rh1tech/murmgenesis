@@ -226,7 +226,7 @@ void i2s_decrease_volume(i2s_config_t *config) {
 
 static bool audio_initialized = false;
 static bool audio_enabled = true;
-static int master_volume = 100;  // 0-128
+static int master_volume = 128;  // 0-128 (max volume)
 static i2s_config_t i2s_config;
 
 // Startup mute: output silence for first N frames to let hardware settle
