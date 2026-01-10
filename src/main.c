@@ -9,6 +9,8 @@
 #include "hardware/clocks.h"
 #include "hardware/structs/qmi.h"
 #include "hardware/watchdog.h"
+#include "hardware/sync.h"  // For memory barriers
+#include "hardware/dma.h"   // For DMA reset at startup
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -314,10 +316,11 @@ static void genesis_init(void) {
     
     // Initialize YM2612
     YM2612Init();
+    YM2612ResetChip();  // MUST call reset to clear all registers after init
     YM2612Config(9);
     
     // Initialize PSG
-    gwenesis_SN76489_Init(3579545, 888 * 60, AUDIO_FREQ_DIVISOR);
+    gwenesis_SN76489_Init(3579545, 873 * 61, AUDIO_FREQ_DIVISOR);
     gwenesis_SN76489_Reset();
     
     // Initialize VDP
@@ -350,6 +353,12 @@ static void __scratch_x("sound") sound_core(void) {
     // Initialize audio on Core 1
     audio_init();
     
+    // CRITICAL: Warmup period - wait for I2S/DMA to stabilize
+    // Don't call audio_submit() - just wait
+    LOG("Audio: Warmup delay...\n");
+    sleep_ms(500);
+    LOG("Audio: Warmup complete\n");
+    
     // Signal that we're ready
     sem_release(&render_start_semaphore);
     
@@ -360,6 +369,9 @@ static void __scratch_x("sound") sound_core(void) {
             tight_loop_contents();
         }
         frame_ready = false;
+        
+        // Memory barrier to ensure we see all writes from Core 0
+        __dmb();
         
         // Submit samples to I2S - samples were already generated during emulation
         // This blocks until previous frame's DMA is done
@@ -503,10 +515,12 @@ static void __time_critical_func(emulation_loop)(void) {
         }
         
         // Generate any remaining audio samples for this frame
-        // This catches up audio to the end of the frame
-        int frame_end_clock = lines_per_frame * VDP_CYCLES_PER_LINE;
-        gwenesis_SN76489_run(frame_end_clock);
-        ym2612_run(frame_end_clock);
+        // Always generate TARGET_SAMPLES_PER_FRAME samples regardless of emulation speed
+        // This keeps audio at constant speed even when video/emulation is slow
+        #define TARGET_SAMPLES_PER_FRAME 873
+        #define AUDIO_TARGET_CLOCK (TARGET_SAMPLES_PER_FRAME * AUDIO_FREQ_DIVISOR)
+        gwenesis_SN76489_run(AUDIO_TARGET_CLOCK);
+        ym2612_run(AUDIO_TARGET_CLOCK);
         
         // ==================================================================
         // PHASE 2: Render the frame AFTER emulation is complete
@@ -539,8 +553,16 @@ static void __time_critical_func(emulation_loop)(void) {
         
         // ==================================================================
         // PHASE 3: Signal Core 1 to submit audio
-        // Core 1 handles DMA synchronization - we don't wait here
+        // Must wait for previous audio to complete before reusing buffer
         // ==================================================================
+        
+        // Wait for previous audio submission to complete 
+        // This prevents buffer race condition where Core 0 overwrites audio
+        // while Core 1 is still reading it
+        while (!audio_done && frame_num > 0) {
+            tight_loop_contents();
+        }
+        audio_done = false;
         
         // Save sample counts for Core 1 BEFORE swapping buffers
         saved_ym_samples = ym2612_index;
@@ -549,6 +571,9 @@ static void __time_critical_func(emulation_loop)(void) {
         // Set read buffer pointers for Core 1 (current write buffer becomes read buffer)
         audio_read_sn76489 = gwenesis_sn76489_buffer;
         audio_read_ym2612 = gwenesis_ym2612_buffer;
+        
+        // Memory barrier to ensure all writes are visible to Core 1
+        __dmb();
         
         // Swap to other buffer for next frame's writes
         audio_write_buffer = 1 - audio_write_buffer;
@@ -576,6 +601,42 @@ static void __time_critical_func(emulation_loop)(void) {
 }
 
 int main(void) {
+    // CRITICAL: Full DMA reset at the very start
+    // After warm reset, DMA channels may be running with stale config
+    // We can't reset ALL DMA (HDMI uses it), but abort all channels first
+    for (int ch = 0; ch < 12; ch++) {
+        dma_channel_abort(ch);
+    }
+    // Wait for all channels to stop
+    while (dma_hw->ch[0].ctrl_trig & DMA_CH0_CTRL_TRIG_BUSY_BITS) tight_loop_contents();
+    while (dma_hw->ch[1].ctrl_trig & DMA_CH1_CTRL_TRIG_BUSY_BITS) tight_loop_contents();
+    // Clear all DMA IRQ flags
+    dma_hw->ints0 = 0xFFFF;
+    dma_hw->ints1 = 0xFFFF;
+    
+    // Invalidate XIP cache to ensure clean flash data after reset
+    extern void xip_cache_clean_all(void);
+    xip_cache_clean_all();
+    
+    // Early delay to let hardware settle
+    for (volatile int i = 0; i < 1000000; i++) { }
+    
+    // CRITICAL: Force cold-boot behavior on warm resets
+    // The reset button doesn't zero .bss like a power-on does
+    // Reset all critical audio state immediately
+    frame_ready = false;
+    audio_done = true;
+    last_frame_sample = 0;
+    audio_write_buffer = 0;
+    sn76489_index = 0;
+    sn76489_clock = 0;
+    ym2612_index = 0;
+    ym2612_clock = 0;
+    saved_ym_samples = 0;
+    saved_sn_samples = 0;
+    audio_read_sn76489 = NULL;
+    audio_read_ym2612 = NULL;
+    
     // Overclock support
 #if CPU_CLOCK_MHZ > 252
     vreg_disable_voltage_limit();
@@ -643,6 +704,16 @@ int main(void) {
     // Initialize semaphore for sound core sync
     sem_init(&render_start_semaphore, 0, 1);
     
+    // Zero audio buffers to prevent garbage from previous session after hard reset
+    memset(gwenesis_sn76489_buffer_mem, 0, sizeof(gwenesis_sn76489_buffer_mem));
+    memset(gwenesis_ym2612_buffer_mem, 0, sizeof(gwenesis_ym2612_buffer_mem));
+    
+    // Reset buffer pointers to valid zeroed buffers
+    gwenesis_sn76489_buffer = gwenesis_sn76489_buffer_mem[0];
+    gwenesis_ym2612_buffer = gwenesis_ym2612_buffer_mem[0];
+    audio_read_sn76489 = gwenesis_sn76489_buffer_mem[0];
+    audio_read_ym2612 = gwenesis_ym2612_buffer_mem[0];
+    
     // Launch Core 1 (sound generation + I2S output)
     LOG("Starting sound core...\\n");
     multicore_launch_core1(sound_core);
@@ -674,6 +745,7 @@ int main(void) {
     // Show ROM selector
     LOG("Showing ROM selector...\n");
     static char selected_rom[MAX_ROM_PATH];
+    
     if (!rom_selector_show(selected_rom, sizeof(selected_rom), (uint8_t *)SCREEN)) {
         LOG("No ROM selected!\n");
         while (1) {

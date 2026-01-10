@@ -1953,13 +1953,11 @@ static void init_tables(void)
 
 /* initialize ym2612 emulator */
 void YM2612Init(void) {
-  static unsigned init_table_done = 0;
-
+  // ALWAYS reinitialize tables - don't trust static state after power cycle/reset
+  // The static flag caused issues: tables would be skipped on warm reset but
+  // might contain garbage data
   memset(&ym2612, 0, sizeof(YM2612));
-  if (init_table_done == 0) {
-    init_tables();
-    init_table_done = 1;
-  }
+  init_tables();
 }
 
 /* reset OPN registers */
@@ -2089,8 +2087,30 @@ static inline void YM2612Update(int16_t *buffer, int length)
       
       /* Use smoothed DAC output */
       out_fm[5] = ym2612.dacout_smooth;
+      ym2612.dacen_prev = 1;
     }
-    /* When DAC is disabled, out_fm[5] already has FM output from chan_calc */
+    else
+    {
+      /* DAC is disabled - smooth transition to FM output */
+      if (ym2612.dacen_prev)
+      {
+        /* DAC just turned off - fade dacout_smooth toward 0 (or FM output) */
+        /* This prevents click when sample ends abruptly */
+        if (ym2612.dacout_smooth > 256) {
+          ym2612.dacout_smooth -= 256;
+          out_fm[5] = ym2612.dacout_smooth;
+        } else if (ym2612.dacout_smooth < -256) {
+          ym2612.dacout_smooth += 256;
+          out_fm[5] = ym2612.dacout_smooth;
+        } else {
+          /* Fade complete, switch to FM */
+          ym2612.dacout_smooth = 0;
+          ym2612.dacen_prev = 0;
+          /* out_fm[5] already has FM output from chan_calc */
+        }
+      }
+      /* else: DAC was already off, out_fm[5] has FM output */
+    }
 
     /* advance LFO */
     advance_lfo();
@@ -2147,6 +2167,14 @@ static inline void YM2612Update(int16_t *buffer, int length)
     lt += out_fm[5];
    // rt += out_fm[5];
 
+    /* Scale down from 6-channel mix (max ±49152) to 16-bit range (±32767) */
+    /* Divide by 2 to prevent overflow: max ±24576, well within int16 range */
+    lt >>= 1;
+    
+    /* Clamp to 16-bit just in case */
+    if (lt > 32767) lt = 32767;
+    if (lt < -32768) lt = -32768;
+    
     *buffer++ = lt;
 
     /* CSM mode: if CSM Key ON has occured, CSM Key OFF need to be sent       */
