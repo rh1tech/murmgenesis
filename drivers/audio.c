@@ -26,23 +26,21 @@
 #include "sound/gwenesis_sn76489.h"
 
 //=============================================================================
-// State - Double-buffered DMA with IRQ for gapless playback
+// State - Ring buffer DMA (no chaining, no IRQ, continuous playback)
 //=============================================================================
 
-// DOUBLE BUFFERING with IRQ:
-// - Buffer 0 and 1 alternate
-// - DMA plays one buffer, IRQ fires when done and starts the other
-// - CPU writes to the buffer that's NOT being played
-// - If CPU is too slow, we wait for DMA to finish current buffer
+// RING BUFFER:
+// - Single large circular buffer (power of 2 size)
+// - DMA reads continuously in a ring, wrapping automatically
+// - CPU writes ahead of DMA read position
+// - No IRQ, no chaining - just check DMA's current position
 
-#define DMA_BUFFER_SIZE 888
-static uint32_t dma_buffer_0[DMA_BUFFER_SIZE];
-static uint32_t dma_buffer_1[DMA_BUFFER_SIZE];
+#define DMA_RING_BITS 12  // 4096 samples = 2^12
+#define DMA_RING_SIZE (1 << DMA_RING_BITS)  // Must be power of 2
+static uint32_t __attribute__((aligned(DMA_RING_SIZE * 4))) dma_ring_buffer[DMA_RING_SIZE];
 
-// Which buffer DMA is currently playing (0 or 1)
-static volatile int dma_playing = 0;
-// Which buffer CPU should write to next (0 or 1)
-static volatile int cpu_buffer = 0;
+// Write position in ring buffer (in samples)
+static volatile uint32_t ring_write_pos = 0;
 
 static int dma_channel = -1;
 static PIO audio_pio;
@@ -73,27 +71,10 @@ i2s_config_t i2s_get_default_config(void) {
     return config;
 }
 
-// DMA IRQ handler - called when audio buffer finishes playing
-static void audio_dma_irq_handler(void) {
-    // Clear the interrupt first (we use DMA_IRQ_1 so clear ints1)
-    dma_hw->ints1 = (1u << dma_channel);
-    
-    // Don't do anything if audio isn't running yet
-    if (!audio_running) return;
-    
-    // Switch to the other buffer
-    dma_playing = 1 - dma_playing;
-    uint32_t *next_buf = (dma_playing == 0) ? dma_buffer_0 : dma_buffer_1;
-    
-    // Start playing the next buffer
-    dma_channel_set_read_addr(dma_channel, next_buf, false);
-    dma_channel_set_trans_count(dma_channel, dma_transfer_count, true);  // Start!
-}
-
 void i2s_init(i2s_config_t *config) {
-    printf("Audio: Initializing I2S with double-buffered DMA + IRQ...\n");
-    printf("Audio: Sample rate: %lu Hz, Buffer: %lu samples\n", 
-           config->sample_freq, config->dma_trans_count);
+    printf("Audio: Initializing I2S with ring buffer DMA...\n");
+    printf("Audio: Sample rate: %lu Hz, Ring size: %d samples\n", 
+           config->sample_freq, DMA_RING_SIZE);
     
     audio_pio = config->pio;
     dma_transfer_count = config->dma_trans_count;
@@ -135,10 +116,9 @@ void i2s_init(i2s_config_t *config) {
     printf("Audio: Clock divider: %lu.%lu (sys=%lu MHz)\n", 
            divider >> 8u, divider & 0xffu, sys_clk / 1000000);
     
-    // Initialize double buffers with silence
-    memset(dma_buffer_0, 0, sizeof(dma_buffer_0));
-    memset(dma_buffer_1, 0, sizeof(dma_buffer_1));
-    config->dma_buf = (uint16_t *)dma_buffer_0;
+    // Initialize ring buffer with silence
+    memset(dma_ring_buffer, 0, sizeof(dma_ring_buffer));
+    config->dma_buf = (uint16_t *)dma_ring_buffer;
     
     // Use fixed DMA channel 10 for audio
     dma_channel_abort(10);
@@ -150,75 +130,77 @@ void i2s_init(i2s_config_t *config) {
     dma_channel_claim(10);
     dma_channel = 10;
     config->dma_channel = dma_channel;
-    printf("Audio: Using DMA channel %d\n", dma_channel);
+    printf("Audio: Using DMA channel %d with ring buffer\n", dma_channel);
     
-    // Configure DMA channel - transfers audio samples to PIO
+    // Configure DMA channel with ring buffer mode
     dma_channel_config cfg = dma_channel_get_default_config(dma_channel);
     channel_config_set_read_increment(&cfg, true);
     channel_config_set_write_increment(&cfg, false);
     channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
     channel_config_set_dreq(&cfg, pio_get_dreq(audio_pio, audio_sm, true));
+    // Ring on read side: wrap every DMA_RING_SIZE * 4 bytes
+    channel_config_set_ring(&cfg, false, DMA_RING_BITS + 2);  // +2 because 4 bytes per sample
     
     dma_channel_configure(
         dma_channel,
         &cfg,
         &audio_pio->txf[audio_sm],
-        dma_buffer_0,
-        config->dma_trans_count,
+        dma_ring_buffer,
+        0xFFFFFFFF,  // Transfer "forever" (will wrap due to ring)
         false  // Don't start yet
     );
-    
-    // Set up IRQ handler for DMA completion
-    // Use DMA_IRQ_1 to avoid conflict with HDMI which may use DMA_IRQ_0
-    dma_channel_set_irq1_enabled(dma_channel, true);
-    irq_set_exclusive_handler(DMA_IRQ_1, audio_dma_irq_handler);
-    irq_set_enabled(DMA_IRQ_1, true);
     
     // Enable PIO state machine
     pio_sm_set_enabled(audio_pio, audio_sm, true);
     
     // Initialize state
-    dma_playing = 0;
-    cpu_buffer = 0;
+    ring_write_pos = 0;
     audio_running = false;
     
-    printf("Audio: I2S ready (double-buffered DMA + IRQ)\n");
+    printf("Audio: I2S ready (ring buffer DMA)\n");
 }
 
 void i2s_dma_write_count(i2s_config_t *config, const int16_t *samples, uint32_t sample_count) {
-    // DOUBLE BUFFERING with IRQ:
-    // - CPU fills the buffer that DMA is NOT currently playing
-    // - When done, wait for DMA to switch (if it hasn't already)
-    // - The IRQ handler automatically starts the next buffer
+    // RING BUFFER:
+    // - DMA reads continuously from ring buffer
+    // - CPU writes ahead of DMA read position
+    // - No synchronization needed - just write and advance position
     
     if (sample_count > dma_transfer_count) sample_count = dma_transfer_count;
     if (sample_count == 0) sample_count = 1;
     
-    // Determine which buffer to write to (opposite of what DMA is playing)
-    int write_buf = 1 - dma_playing;
-    uint32_t *buf = (write_buf == 0) ? dma_buffer_0 : dma_buffer_1;
+    // Write samples to ring buffer at current write position
+    uint32_t *write_ptr = &dma_ring_buffer[ring_write_pos];
     
-    // Fill the buffer
     if (config->volume == 0) {
-        memcpy(buf, samples, sample_count * sizeof(uint32_t));
+        // Simple copy - need to handle wrap-around
+        uint32_t first_chunk = DMA_RING_SIZE - ring_write_pos;
+        if (first_chunk >= sample_count) {
+            memcpy(write_ptr, samples, sample_count * sizeof(uint32_t));
+        } else {
+            memcpy(write_ptr, samples, first_chunk * sizeof(uint32_t));
+            memcpy(dma_ring_buffer, &samples[first_chunk * 2], (sample_count - first_chunk) * sizeof(uint32_t));
+        }
     } else {
-        int16_t *buf16 = (int16_t *)buf;
+        // Volume adjustment with wrap-around handling
+        int16_t *buf16 = (int16_t *)write_ptr;
         for (uint32_t i = 0; i < sample_count * 2; i++) {
-            buf16[i] = samples[i] >> config->volume;
+            uint32_t idx = (ring_write_pos * 2 + i) & ((DMA_RING_SIZE * 2) - 1);
+            ((int16_t *)dma_ring_buffer)[idx] = samples[i] >> config->volume;
         }
     }
     
     // Memory barrier to ensure writes are visible before DMA reads
     __dmb();
     
+    // Advance write position (wrap around)
+    ring_write_pos = (ring_write_pos + sample_count) & (DMA_RING_SIZE - 1);
+    
     if (!audio_running) {
-        // FIRST FRAME: Start DMA with buffer 0
-        dma_playing = 0;
-        dma_channel_set_read_addr(dma_channel, dma_buffer_0, false);
-        dma_channel_set_trans_count(dma_channel, sample_count, true);  // Start!
+        // FIRST FRAME: Start DMA
+        dma_channel_start(dma_channel);
         audio_running = true;
     }
-    // IRQ handler takes care of switching buffers - no waiting needed here
 }
 
 void i2s_dma_write(i2s_config_t *config, const int16_t *samples) {
@@ -268,10 +250,9 @@ bool audio_init(void) {
     // Reset all state variables first
     audio_initialized = false;
     audio_running = false;
-    dma_playing = 0;
-    cpu_buffer = 0;
     lpf_state = 0;
     dma_channel = -1;
+    ring_write_pos = 0;
     startup_frame_counter = 0;
     
     i2s_config = i2s_get_default_config();
