@@ -73,7 +73,10 @@ extern void m68k_run_fast(unsigned int cycles);
 #if ENABLE_PROFILING
 typedef struct {
     uint64_t m68k_time;
+    uint64_t z80_time;
     uint64_t vdp_time;
+    uint64_t sound_time;
+    uint64_t audio_wait_time;
     uint64_t frame_time;
     uint64_t idle_time;
     uint32_t frame_count;
@@ -106,23 +109,36 @@ static void print_profiling_stats(void) {
     if (profile_stats.frame_count == 0) return;
     
     uint64_t total = profile_stats.frame_time;
+    uint64_t tracked = profile_stats.m68k_time + profile_stats.z80_time + 
+                       profile_stats.vdp_time + profile_stats.sound_time + 
+                       profile_stats.audio_wait_time + profile_stats.idle_time;
+    uint64_t other = (total > tracked) ? (total - tracked) : 0;
     
     LOG("\n=== Profiling Stats (avg per frame over %u frames) ===\n", profile_stats.frame_count);
     LOG("M68K execution:  %6lu us (%3d%%)\n", 
         (unsigned long)(profile_stats.m68k_time / profile_stats.frame_count),
         (int)((profile_stats.m68k_time * 100) / total));
+    LOG("Z80 execution:   %6lu us (%3d%%)\n", 
+        (unsigned long)(profile_stats.z80_time / profile_stats.frame_count),
+        (int)((profile_stats.z80_time * 100) / total));
     LOG("VDP rendering:   %6lu us (%3d%%)\n", 
         (unsigned long)(profile_stats.vdp_time / profile_stats.frame_count),
         (int)((profile_stats.vdp_time * 100) / total));
-    LOG("Idle/sync:       %6lu us (%3d%%)\n", 
-        (unsigned long)(profile_stats.idle_time / profile_stats.frame_count),
-        (int)((profile_stats.idle_time * 100) / total));
+    LOG("Sound chips:     %6lu us (%3d%%)\n", 
+        (unsigned long)(profile_stats.sound_time / profile_stats.frame_count),
+        (int)((profile_stats.sound_time * 100) / total));
+    LOG("Audio wait:      %6lu us (%3d%%)\n", 
+        (unsigned long)(profile_stats.audio_wait_time / profile_stats.frame_count),
+        (int)((profile_stats.audio_wait_time * 100) / total));
+    LOG("Other/overhead:  %6lu us (%3d%%)\n", 
+        (unsigned long)(other / profile_stats.frame_count),
+        (int)((other * 100) / total));
     LOG("Total frame:     %6lu us (min=%lu, max=%lu)\n", 
         (unsigned long)(total / profile_stats.frame_count),
         (unsigned long)profile_stats.min_frame_time,
         (unsigned long)profile_stats.max_frame_time);
     LOG("Frame rate:      %6.2f fps (target=60.00)\n", 1000000.0 / (total / (float)profile_stats.frame_count));
-    LOG("Frame variance:  slow=%u (>17ms), fast=%u (<16ms)\n",
+    LOG("Slow frames: %u (>17ms), Fast: %u (<16ms)\n",
         profile_stats.slow_frames, profile_stats.fast_frames);
     LOG("================================================\n\n");
     
@@ -421,32 +437,9 @@ static void __time_critical_func(emulation_loop)(void) {
 
         PROFILE_FRAME_START();
         
-        // ==================================================================
-        // Frame timing: Only limit if we're running FASTER than 60 FPS
-        // If emulation is slow, don't add any delay - let it run full speed
-        // ==================================================================
-        static uint64_t next_frame_time = 0;
-        uint64_t now = time_us_64();
-        
-        // Target 65 FPS (15385µs) to give headroom - ensures we never dip below 60
-        #define FRAME_TIME_US 15385
-        
-        if (next_frame_time == 0) {
-            // First frame: initialize timing
-            next_frame_time = now + FRAME_TIME_US;
-        } else if (now < next_frame_time) {
-            // We're AHEAD of schedule (running fast) - wait to maintain target fps
-            PROFILE_START();
-            while (time_us_64() < next_frame_time) {
-                tight_loop_contents();
-            }
-            PROFILE_END(idle_time);
-            next_frame_time += FRAME_TIME_US;
-        } else {
-            // We're BEHIND schedule (running slow) - don't wait, reset timing
-            // This prevents accumulated delay from slowing us further
-            next_frame_time = now + FRAME_TIME_US;
-        }
+        // No explicit frame limiting needed - audio DMA wait provides natural pacing
+        // When running fast, Core 1 waits for DMA buffer room (~60 FPS)
+        // When running slow, no waiting occurs (raw emulation speed)
         
         system_clock = 0;
         scan_line = 0;
@@ -464,7 +457,7 @@ static void __time_critical_func(emulation_loop)(void) {
         // ==================================================================
         // PHASE 1: Run all emulation first (M68K + Z80 + sound chips)
         // This ensures sound chip state is updated at consistent timing
-        // Z80 runs every scanline for proper DAC sample timing
+        // Z80 must run every scanline for proper DAC/PCM timing
         // ==================================================================
         while (scan_line < lines_per_frame) {
             // Run M68K for one line
@@ -476,8 +469,10 @@ static void __time_critical_func(emulation_loop)(void) {
 #endif
             PROFILE_END(m68k_time);
             
-            // Run Z80 every scanline for proper DAC sample playback timing
+            // Run Z80 every scanline - required for correct PCM audio timing
+            PROFILE_START();
             z80_run(system_clock + VDP_CYCLES_PER_LINE);
+            PROFILE_END(z80_time);
             
             // Note: Sound chips are called automatically during YM2612Write/SN76489_Write
             // with GWENESIS_AUDIO_ACCURATE=1 for cycle-accurate timing
@@ -519,8 +514,10 @@ static void __time_critical_func(emulation_loop)(void) {
         // This keeps audio at constant speed even when video/emulation is slow
         #define TARGET_SAMPLES_PER_FRAME 888
         #define AUDIO_TARGET_CLOCK (TARGET_SAMPLES_PER_FRAME * AUDIO_FREQ_DIVISOR)
+        PROFILE_START();
         gwenesis_SN76489_run(AUDIO_TARGET_CLOCK);
         ym2612_run(AUDIO_TARGET_CLOCK);
+        PROFILE_END(sound_time);
         
         // ==================================================================
         // PHASE 2: Render the frame AFTER emulation is complete
@@ -559,9 +556,11 @@ static void __time_critical_func(emulation_loop)(void) {
         // Wait for previous audio submission to complete 
         // This prevents buffer race condition where Core 0 overwrites audio
         // while Core 1 is still reading it
+        PROFILE_START();
         while (!audio_done && frame_num > 0) {
             tight_loop_contents();
         }
+        PROFILE_END(audio_wait_time);
         audio_done = false;
         
         // Save sample counts for Core 1 BEFORE swapping buffers

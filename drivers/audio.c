@@ -178,8 +178,8 @@ void i2s_dma_write_count(i2s_config_t *config, const int16_t *samples, uint32_t 
     if (sample_count > dma_transfer_count) sample_count = dma_transfer_count;
     if (sample_count == 0) sample_count = 1;
     
-    // CRITICAL: Wait if buffer is too full (prevents overwriting unread samples)
-    // Leave at least 2 frames of headroom margin
+    // Audio DMA wait - this naturally limits to ~60 FPS when running fast
+    // When emulation is slow, there's no wait (buffer has room)
     if (audio_running) {
         const int32_t max_headroom = DMA_RING_SIZE - (sample_count * 2);
         while (get_buffer_headroom() > max_headroom) {

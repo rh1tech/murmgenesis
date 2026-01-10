@@ -22,7 +22,7 @@
 .extern cpu
 
 /* Constants */
-.equ Z80_FREQ_DIVISOR, 15
+.equ Z80_FREQ_DIVISOR, 25
 .equ Z80_ICOUNT_OFFSET, 84  /* Offset of ICount in Z80 structure */
 
 /*

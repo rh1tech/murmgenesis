@@ -47,7 +47,7 @@ __license__ = "GPLv3"
 // When 1, audio samples are generated at the correct timing during register writes
 #define GWENESIS_AUDIO_ACCURATE 1
 
-#define Z80_FREQ_DIVISOR 15     // Frequency divisor from master clock to Z80 clock (53.693 MHz / 3.58 MHz ≈ 15)
+#define Z80_FREQ_DIVISOR 25     // Frequency divisor - increased from 15 to reduce Z80 load for PCM-heavy games
 #define VDP_CYCLES_PER_LINE 3420// VDP Cycles per Line
 #define SCREEN_WIDTH 320
 #define GWENESIS_SCREEN_WIDTH 320
