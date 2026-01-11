@@ -62,6 +62,15 @@
 // Use assembly-optimized M68K loop (set to 0 to use original C loop for debugging)
 #define USE_M68K_FAST_LOOP 1
 
+// Adaptive frame skipping (video-only): when the emulation workload exceeds the
+// target frame budget, we temporarily skip some renders to keep audio/emulation
+// stable. Safety bounds prevent long streaks of unrendered frames and parity
+// fairness avoids sampling only even/odd frames (important for sprite blinking).
+#define ENABLE_ADAPTIVE_FRAMESKIP 1
+#define FRAMESKIP_MAX_CONSECUTIVE 4
+#define FRAMESKIP_MAX_BACKLOG_FRAMES 8
+#define FRAMESKIP_RENDER_COST_DEFAULT_US 4000u
+
 #if USE_M68K_FAST_LOOP
 // Assembly-optimized M68K execution loop
 extern void m68k_run_fast(unsigned int cycles);
@@ -413,29 +422,77 @@ static void __time_critical_func(emulation_loop)(void) {
     uint64_t first_frame_time = 0;
     uint32_t frame_num = 0;
     uint32_t consecutive_skipped_frames = 0;
-    uint32_t render_phase = 0;  // Alternating pattern for frame skip to avoid stuck sprites
+    uint32_t frame_budget_us = 16666;
+    uint64_t frame_work_start_us = 0;
+    uint32_t frame_work_us = 0;
+    uint32_t audio_wait_us_local = 0;
+
+    // Adaptive frameskip state
+    uint32_t backlog_us = 0;                 // accumulated "time behind" (work - budget)
+    uint32_t render_cost_ema_us = 0;         // EMA of render cost when we do render
+    int last_rendered_parity = -1;           // 0/1 or -1 unknown
+    uint32_t same_parity_render_count = 0;   // count of repeated parity renders (can cause blink invisibility)
 
     while (1) {
         int hint_counter = gwenesis_vdp_regs[10];
         
         bool is_pal = REG1_PAL;
+        // Target frame budget for adaptive frame skipping
+        frame_budget_us = 1000000u / (is_pal ? GWENESIS_REFRESH_RATE_PAL : GWENESIS_REFRESH_RATE_NTSC);
         screen_width = REG12_MODE_H40 ? 320 : 256;
         screen_height = is_pal ? 240 : 224;
         lines_per_frame = is_pal ? LINES_PER_FRAME_PAL : LINES_PER_FRAME_NTSC;
         
         // Only update graphics config when screen dimensions change
+        bool force_render = false;
         if (screen_width != last_screen_width || screen_height != last_screen_height) {
             graphics_set_res(screen_width, screen_height);
             graphics_set_shift(screen_width != 320 ? 32 : 0, screen_height != 240 ? 8 : 0);
             gwenesis_vdp_render_config();
             last_screen_width = screen_width;
             last_screen_height = screen_height;
+            force_render = true;
         }
-        
-        // Frame skip: render 2 out of 3 frames
-        bool render_this_frame = (frame_num % 3) != 0;
+
+        // Decide whether to render this frame (video-only). Emulation + audio run every frame.
+        // If we're consistently too slow, build backlog_us and skip some renders.
+        bool render_this_frame = true;
+#if ENABLE_ADAPTIVE_FRAMESKIP
+        // If we have backlog, prefer skipping render (saves render_cost_ema_us).
+        uint32_t estimated_render_cost_us = render_cost_ema_us ? render_cost_ema_us : FRAMESKIP_RENDER_COST_DEFAULT_US;
+        if (backlog_us >= (estimated_render_cost_us / 2u) && estimated_render_cost_us) {
+            render_this_frame = false;
+        }
+        // Safety: always render at least once every (FRAMESKIP_MAX_CONSECUTIVE + 1) frames.
+        if (consecutive_skipped_frames >= FRAMESKIP_MAX_CONSECUTIVE) {
+            render_this_frame = true;
+        }
+
+        // Parity fairness: if we're about to skip an opposite-parity frame while repeatedly
+        // rendering the same parity (e.g. render every 2 frames), force a render to ensure
+        // 60Hz alternating effects (like invincibility blinking) remain visible.
+        if (!render_this_frame && last_rendered_parity >= 0) {
+            int current_parity = (int)(frame_num & 1u);
+            if (current_parity != last_rendered_parity && same_parity_render_count >= 1u) {
+                render_this_frame = true;
+            }
+        }
+#endif
+        if (force_render) {
+            render_this_frame = true;
+        }
+
+#if ENABLE_ADAPTIVE_FRAMESKIP
+        // If we choose to skip, immediately reduce backlog by the estimated render cost.
+        // This prevents long streaks of skips and makes the controller more stable.
+        if (!render_this_frame && backlog_us) {
+            uint32_t dec = render_cost_ema_us ? render_cost_ema_us : FRAMESKIP_RENDER_COST_DEFAULT_US;
+            backlog_us = (backlog_us > dec) ? (backlog_us - dec) : 0;
+        }
+#endif
 
         PROFILE_FRAME_START();
+        frame_work_start_us = time_us_64();
         
         // No explicit frame limiting needed - audio DMA wait provides natural pacing
         // When running fast, Core 1 waits for DMA buffer room (~60 FPS)
@@ -524,10 +581,18 @@ static void __time_critical_func(emulation_loop)(void) {
         // ==================================================================
         if (render_this_frame) {
             PROFILE_START();
+            uint64_t render_start_us = time_us_64();
             for (int line = 0; line < screen_height; line++) {
                 gwenesis_vdp_render_line(line);
             }
+            uint32_t render_us = (uint32_t)(time_us_64() - render_start_us);
             PROFILE_END(vdp_time);
+
+#if ENABLE_ADAPTIVE_FRAMESKIP
+            // EMA update (1/8 smoothing). Keep a non-zero estimate.
+            if (render_cost_ema_us == 0) render_cost_ema_us = render_us ? render_us : FRAMESKIP_RENDER_COST_DEFAULT_US;
+            else render_cost_ema_us = (render_cost_ema_us * 7u + (render_us ? render_us : render_cost_ema_us)) / 8u;
+#endif
         }
         
         frame_counter++;
@@ -539,6 +604,13 @@ static void __time_critical_func(emulation_loop)(void) {
 
         if (render_this_frame) {
             consecutive_skipped_frames = 0;
+
+#if ENABLE_ADAPTIVE_FRAMESKIP
+            int current_parity = (int)(frame_num & 1u);
+            if (last_rendered_parity == current_parity) same_parity_render_count++;
+            else same_parity_render_count = 0;
+            last_rendered_parity = current_parity;
+#endif
         } else {
             consecutive_skipped_frames++;
         }
@@ -551,16 +623,41 @@ static void __time_critical_func(emulation_loop)(void) {
         // PHASE 3: Signal Core 1 to submit audio
         // Must wait for previous audio to complete before reusing buffer
         // ==================================================================
+
+        // Compute work time for this frame (emulation + optional render), excluding audio wait.
+        frame_work_us = (uint32_t)(time_us_64() - frame_work_start_us);
         
         // Wait for previous audio submission to complete 
         // This prevents buffer race condition where Core 0 overwrites audio
         // while Core 1 is still reading it
         PROFILE_START();
+        uint64_t audio_wait_start_us = time_us_64();
         while (!audio_done && frame_num > 0) {
             tight_loop_contents();
         }
+        audio_wait_us_local = (uint32_t)(time_us_64() - audio_wait_start_us);
         PROFILE_END(audio_wait_time);
         audio_done = false;
+
+#if ENABLE_ADAPTIVE_FRAMESKIP
+        // Update backlog after the frame's work is complete.
+        // If we had to wait for audio, we're not "behind" (audio pacing is active), so pay backlog down.
+        {
+            int32_t delta = (int32_t)frame_work_us - (int32_t)frame_budget_us;
+            if (delta > 0) backlog_us += (uint32_t)delta;
+            else {
+                uint32_t dec = (uint32_t)(-delta);
+                backlog_us = (backlog_us > dec) ? (backlog_us - dec) : 0;
+            }
+
+            if (audio_wait_us_local > 500u) {
+                backlog_us = 0;
+            }
+
+            uint32_t max_backlog_us = frame_budget_us * FRAMESKIP_MAX_BACKLOG_FRAMES;
+            if (backlog_us > max_backlog_us) backlog_us = max_backlog_us;
+        }
+#endif
         
         // Save sample counts for Core 1 BEFORE swapping buffers
         saved_ym_samples = ym2612_index;
