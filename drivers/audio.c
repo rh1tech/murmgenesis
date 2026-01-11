@@ -1,10 +1,13 @@
 /*
- * murmgenesis - I2S Audio Driver with Chained DMA
- * 
+ * murmgenesis - I2S Audio Driver with Chained Double Buffer DMA
+ *
  * Uses two DMA channels in ping-pong configuration:
  * - Channel A plays buffer 0, then triggers channel B
  * - Channel B plays buffer 1, then triggers channel A
- * - This provides gapless audio playback with no underruns
+ *
+ * Each channel completion raises DMA_IRQ_1; the IRQ handler re-arms the
+ * completed channel (reset read addr + transfer count) and marks its buffer
+ * free for the CPU to refill.
  */
 
 #include "audio.h"
@@ -19,6 +22,7 @@
 #include "hardware/dma.h"
 #include "hardware/clocks.h"
 #include "hardware/sync.h"  // For memory barriers
+#include "hardware/irq.h"
 #include "hardware/resets.h"  // For reset_block
 
 // Genesis sound chip headers
@@ -26,36 +30,41 @@
 #include "sound/gwenesis_sn76489.h"
 
 //=============================================================================
-// State - Ring buffer DMA (no chaining, no IRQ, continuous playback)
+// State - Chained double buffer (ping-pong) DMA
 //=============================================================================
 
-// RING BUFFER:
-// - Single large circular buffer (power of 2 size)
-// - DMA reads continuously in a ring, wrapping automatically
-// - CPU writes ahead of DMA read position
-// - No IRQ, no chaining - just check DMA's current position
+// NOTE: HDMI uses DMA_IRQ_0 with an exclusive handler.
+// Audio uses DMA_IRQ_1 to avoid conflicts.
 
-#define DMA_RING_BITS 12  // 4096 samples = 2^12
-#define DMA_RING_SIZE (1 << DMA_RING_BITS)  // Must be power of 2
-static uint32_t __attribute__((aligned(DMA_RING_SIZE * 4))) dma_ring_buffer[DMA_RING_SIZE];
+#define AUDIO_DMA_IRQ DMA_IRQ_1
 
-// Write position in ring buffer (in samples)
-static volatile uint32_t ring_write_pos = 0;
+// Fixed DMA channels for audio (keep away from dynamically-claimed HDMI channels)
+#define AUDIO_DMA_CH_A 10
+#define AUDIO_DMA_CH_B 11
 
-// Pre-roll: buffer this many frames before starting DMA
-#define PREROLL_FRAMES 3
+#define DMA_BUFFER_COUNT 2
+// One DMA word is one stereo frame (packed L/R int16).
+// AUDIO_BUFFER_SAMPLES is sized to cover NTSC/PAL with headroom.
+#define DMA_BUFFER_MAX_SAMPLES AUDIO_BUFFER_SAMPLES
+
+static uint32_t __attribute__((aligned(4))) dma_buffers[DMA_BUFFER_COUNT][DMA_BUFFER_MAX_SAMPLES];
+
+// Bitmask of buffers the CPU is allowed to write (1 = free)
+static volatile uint32_t dma_buffers_free_mask = 0;
+
+// Pre-roll: fill both buffers before starting playback
+#define PREROLL_BUFFERS 2
 static volatile int preroll_count = 0;
 
-static int dma_channel = -1;
+static int dma_channel_a = -1;
+static int dma_channel_b = -1;
 static PIO audio_pio;
 static uint audio_sm;
 static uint32_t dma_transfer_count;
 
 static volatile bool audio_running = false;
 
-// Forward declarations for DMA position tracking
-static inline uint32_t get_dma_read_pos(void);
-static inline int32_t get_buffer_headroom(void);
+static void audio_dma_irq_handler(void);
 
 //=============================================================================
 // I2S Implementation
@@ -80,9 +89,9 @@ i2s_config_t i2s_get_default_config(void) {
 }
 
 void i2s_init(i2s_config_t *config) {
-    printf("Audio: Initializing I2S with ring buffer DMA...\n");
-    printf("Audio: Sample rate: %lu Hz, Ring size: %d samples\n", 
-           config->sample_freq, DMA_RING_SIZE);
+    printf("Audio: Initializing I2S with chained double-buffer DMA...\n");
+    printf("Audio: Sample rate: %u Hz, DMA buffer size: %lu frames\n",
+           (unsigned)config->sample_freq, (unsigned long)config->dma_trans_count);
     
     audio_pio = config->pio;
     dma_transfer_count = config->dma_trans_count;
@@ -91,9 +100,8 @@ void i2s_init(i2s_config_t *config) {
     reset_block(RESETS_RESET_PIO0_BITS);
     unreset_block_wait(RESETS_RESET_PIO0_BITS);
     
-    // Clear all DMA IRQ flags
-    dma_hw->ints0 = 0xFFFF;
-    dma_hw->ints1 = 0xFFFF;
+    // Clear audio DMA IRQ flags (IRQ1)
+    dma_hw->ints1 = (1u << AUDIO_DMA_CH_A) | (1u << AUDIO_DMA_CH_B);
     
     // Configure GPIO for PIO
     gpio_set_function(config->data_pin, GPIO_FUNC_PIO0);
@@ -121,106 +129,145 @@ void i2s_init(i2s_config_t *config) {
     uint32_t sys_clk = clock_get_hz(clk_sys);
     uint32_t divider = sys_clk * 4 / config->sample_freq;
     pio_sm_set_clkdiv_int_frac(audio_pio, audio_sm, divider >> 8u, divider & 0xffu);
-    printf("Audio: Clock divider: %lu.%lu (sys=%lu MHz)\n", 
-           divider >> 8u, divider & 0xffu, sys_clk / 1000000);
+        printf("Audio: Clock divider: %u.%u (sys=%lu MHz)\n",
+            (unsigned)(divider >> 8u), (unsigned)(divider & 0xffu), (unsigned long)(sys_clk / 1000000));
     
-    // Initialize ring buffer with silence
-    memset(dma_ring_buffer, 0, sizeof(dma_ring_buffer));
-    config->dma_buf = (uint16_t *)dma_ring_buffer;
-    
-    // Use fixed DMA channel 10 for audio
-    dma_channel_abort(10);
-    while (dma_channel_is_busy(10)) {
+    // Validate transfer count fits our static buffers
+    dma_transfer_count = config->dma_trans_count;
+    if (dma_transfer_count == 0) dma_transfer_count = 1;
+    if (dma_transfer_count > DMA_BUFFER_MAX_SAMPLES) dma_transfer_count = DMA_BUFFER_MAX_SAMPLES;
+    config->dma_trans_count = (uint16_t)dma_transfer_count;
+
+    // Initialize DMA buffers with silence
+    memset(dma_buffers, 0, sizeof(dma_buffers));
+    config->dma_buf = (uint16_t *)(void *)dma_buffers[0];
+
+    // Use fixed DMA channels for audio
+    dma_channel_abort(AUDIO_DMA_CH_A);
+    dma_channel_abort(AUDIO_DMA_CH_B);
+    while (dma_channel_is_busy(AUDIO_DMA_CH_A) || dma_channel_is_busy(AUDIO_DMA_CH_B)) {
         tight_loop_contents();
     }
-    
-    dma_channel_unclaim(10);
-    dma_channel_claim(10);
-    dma_channel = 10;
-    config->dma_channel = dma_channel;
-    printf("Audio: Using DMA channel %d with ring buffer\n", dma_channel);
-    
-    // Configure DMA channel with ring buffer mode
-    dma_channel_config cfg = dma_channel_get_default_config(dma_channel);
-    channel_config_set_read_increment(&cfg, true);
-    channel_config_set_write_increment(&cfg, false);
-    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
-    channel_config_set_dreq(&cfg, pio_get_dreq(audio_pio, audio_sm, true));
-    // Ring on read side: wrap every DMA_RING_SIZE * 4 bytes
-    channel_config_set_ring(&cfg, false, DMA_RING_BITS + 2);  // +2 because 4 bytes per sample
-    
+
+    dma_channel_unclaim(AUDIO_DMA_CH_A);
+    dma_channel_unclaim(AUDIO_DMA_CH_B);
+    dma_channel_claim(AUDIO_DMA_CH_A);
+    dma_channel_claim(AUDIO_DMA_CH_B);
+    dma_channel_a = AUDIO_DMA_CH_A;
+    dma_channel_b = AUDIO_DMA_CH_B;
+    config->dma_channel = (uint8_t)dma_channel_a;
+    printf("Audio: Using DMA channels %d/%d (IRQ=%d)\n", dma_channel_a, dma_channel_b, AUDIO_DMA_IRQ);
+
+    // Configure DMA channels in ping-pong chain
+    dma_channel_config cfg_a = dma_channel_get_default_config(dma_channel_a);
+    channel_config_set_read_increment(&cfg_a, true);
+    channel_config_set_write_increment(&cfg_a, false);
+    channel_config_set_transfer_data_size(&cfg_a, DMA_SIZE_32);
+    channel_config_set_dreq(&cfg_a, pio_get_dreq(audio_pio, audio_sm, true));
+    channel_config_set_chain_to(&cfg_a, dma_channel_b);
+
+    dma_channel_config cfg_b = dma_channel_get_default_config(dma_channel_b);
+    channel_config_set_read_increment(&cfg_b, true);
+    channel_config_set_write_increment(&cfg_b, false);
+    channel_config_set_transfer_data_size(&cfg_b, DMA_SIZE_32);
+    channel_config_set_dreq(&cfg_b, pio_get_dreq(audio_pio, audio_sm, true));
+    channel_config_set_chain_to(&cfg_b, dma_channel_a);
+
     dma_channel_configure(
-        dma_channel,
-        &cfg,
+        dma_channel_a,
+        &cfg_a,
         &audio_pio->txf[audio_sm],
-        dma_ring_buffer,
-        0xFFFFFFFF,  // Transfer "forever" - ring wraps read address
-        false  // Don't start yet
+        dma_buffers[0],
+        dma_transfer_count,
+        false
     );
+
+    dma_channel_configure(
+        dma_channel_b,
+        &cfg_b,
+        &audio_pio->txf[audio_sm],
+        dma_buffers[1],
+        dma_transfer_count,
+        false
+    );
+
+    // Set up DMA IRQ1 handler (avoid HDMI's DMA_IRQ_0 exclusive handler)
+    irq_set_exclusive_handler(AUDIO_DMA_IRQ, audio_dma_irq_handler);
+    irq_set_priority(AUDIO_DMA_IRQ, 0x80);
+    irq_set_enabled(AUDIO_DMA_IRQ, true);
+
+    // Enable IRQ1 for both channels
+    dma_hw->ints1 = (1u << dma_channel_a) | (1u << dma_channel_b);
+    dma_channel_set_irq1_enabled(dma_channel_a, true);
+    dma_channel_set_irq1_enabled(dma_channel_b, true);
     
     // Enable PIO state machine
     pio_sm_set_enabled(audio_pio, audio_sm, true);
     
     // Initialize state
-    ring_write_pos = 0;
     preroll_count = 0;
+    dma_buffers_free_mask = (1u << DMA_BUFFER_COUNT) - 1u; // both free
     audio_running = false;
-    
-    printf("Audio: I2S ready (ring buffer DMA with %d frame pre-roll)\n", PREROLL_FRAMES);
+
+    printf("Audio: I2S ready (double buffer DMA with %d buffer pre-roll)\n", PREROLL_BUFFERS);
 }
 
 void i2s_dma_write_count(i2s_config_t *config, const int16_t *samples, uint32_t sample_count) {
-    // RING BUFFER:
-    // - DMA reads continuously from ring buffer
-    // - CPU writes ahead of DMA read position
-    // - Must not overwrite samples DMA hasn't read yet!
-    
     if (sample_count > dma_transfer_count) sample_count = dma_transfer_count;
     if (sample_count == 0) sample_count = 1;
-    
-    // Audio DMA wait - this naturally limits to ~60 FPS when running fast
-    // When emulation is slow, there's no wait (buffer has room)
-    if (audio_running) {
-        const int32_t max_headroom = DMA_RING_SIZE - (sample_count * 2);
-        while (get_buffer_headroom() > max_headroom) {
-            tight_loop_contents();
+
+    // Wait for a free buffer, then claim it (atomically vs DMA IRQ)
+    uint8_t buf_index = 0;
+    while (true) {
+        uint32_t irq_state = save_and_disable_interrupts();
+        uint32_t free_mask = dma_buffers_free_mask;
+
+        if (!audio_running) {
+            // Pre-roll fills buffer 0 then buffer 1 to preserve ordering
+            buf_index = (uint8_t)preroll_count;
+            if (buf_index < DMA_BUFFER_COUNT && (free_mask & (1u << buf_index))) {
+                dma_buffers_free_mask &= ~(1u << buf_index);
+                restore_interrupts(irq_state);
+                break;
+            }
+        } else {
+            if (free_mask) {
+                buf_index = (free_mask & 1u) ? 0 : 1;
+                dma_buffers_free_mask &= ~(1u << buf_index);
+                restore_interrupts(irq_state);
+                break;
+            }
         }
+
+        restore_interrupts(irq_state);
+        tight_loop_contents();
     }
-    
-    // Write samples to ring buffer at current write position
-    uint32_t *write_ptr = &dma_ring_buffer[ring_write_pos];
+
+    uint32_t *write_ptr = dma_buffers[buf_index];
+    int16_t *write_ptr16 = (int16_t *)(void *)write_ptr;
     
     if (config->volume == 0) {
-        // Simple copy - need to handle wrap-around
-        uint32_t first_chunk = DMA_RING_SIZE - ring_write_pos;
-        if (first_chunk >= sample_count) {
-            memcpy(write_ptr, samples, sample_count * sizeof(uint32_t));
-        } else {
-            memcpy(write_ptr, samples, first_chunk * sizeof(uint32_t));
-            memcpy(dma_ring_buffer, &samples[first_chunk * 2], (sample_count - first_chunk) * sizeof(uint32_t));
-        }
+        memcpy(write_ptr, samples, sample_count * sizeof(uint32_t));
     } else {
-        // Volume adjustment with wrap-around handling
-        int16_t *buf16 = (int16_t *)write_ptr;
+        // Volume adjustment
         for (uint32_t i = 0; i < sample_count * 2; i++) {
-            uint32_t idx = (ring_write_pos * 2 + i) & ((DMA_RING_SIZE * 2) - 1);
-            ((int16_t *)dma_ring_buffer)[idx] = samples[i] >> config->volume;
+            write_ptr16[i] = samples[i] >> config->volume;
         }
+    }
+
+    // Pad remainder with silence to keep DMA transfer size stable
+    if (sample_count < dma_transfer_count) {
+        memset(&write_ptr[sample_count], 0, (dma_transfer_count - sample_count) * sizeof(uint32_t));
     }
     
     // Memory barrier to ensure writes are visible before DMA reads
     __dmb();
     
-    // Advance write position (wrap around)
-    ring_write_pos = (ring_write_pos + sample_count) & (DMA_RING_SIZE - 1);
-    
     if (!audio_running) {
         preroll_count++;
-        if (preroll_count >= PREROLL_FRAMES) {
-            // We've buffered enough frames ahead - NOW start DMA
-            // DMA will start reading from position 0, but we've already
-            // written PREROLL_FRAMES worth of data ahead
-            dma_channel_start(dma_channel);
+        if (preroll_count >= PREROLL_BUFFERS) {
+            // Both buffers are filled and queued; start playback on channel A
+            dma_channel_start(dma_channel_a);
             audio_running = true;
         }
     }
@@ -274,9 +321,10 @@ bool audio_init(void) {
     audio_initialized = false;
     audio_running = false;
     lpf_state = 0;
-    dma_channel = -1;
-    ring_write_pos = 0;
+    dma_channel_a = -1;
+    dma_channel_b = -1;
     preroll_count = 0;
+    dma_buffers_free_mask = (1u << DMA_BUFFER_COUNT) - 1u;
     startup_frame_counter = 0;
     
     i2s_config = i2s_get_default_config();
@@ -290,7 +338,36 @@ bool audio_init(void) {
 
 void audio_shutdown(void) {
     if (!audio_initialized) return;
+
+    // Stop producing new audio and stop the PIO state machine first
+    audio_running = false;
     pio_sm_set_enabled(audio_pio, audio_sm, false);
+
+    // Disable DMA IRQ and per-channel IRQ generation (audio uses IRQ1)
+    irq_set_enabled(AUDIO_DMA_IRQ, false);
+
+    if (dma_channel_a >= 0) {
+        dma_channel_set_irq1_enabled(dma_channel_a, false);
+        dma_channel_abort(dma_channel_a);
+        // Clear any pending IRQ flag
+        dma_hw->ints1 = (1u << dma_channel_a);
+        dma_channel_unclaim(dma_channel_a);
+        dma_channel_a = -1;
+    }
+
+    if (dma_channel_b >= 0) {
+        dma_channel_set_irq1_enabled(dma_channel_b, false);
+        dma_channel_abort(dma_channel_b);
+        // Clear any pending IRQ flag
+        dma_hw->ints1 = (1u << dma_channel_b);
+        dma_channel_unclaim(dma_channel_b);
+        dma_channel_b = -1;
+    }
+
+    // Mark both buffers free again
+    dma_buffers_free_mask = (1u << DMA_BUFFER_COUNT) - 1u;
+    preroll_count = 0;
+
     audio_initialized = false;
 }
 
@@ -359,23 +436,27 @@ static int16_t prev_sample = 0;
 static int32_t first_click_idx = -1;
 static int16_t click_before = 0, click_after = 0;
 
-// Get DMA read position from hardware
-static inline uint32_t get_dma_read_pos(void) {
-    if (dma_channel < 0) return 0;
-    // DMA read address tells us where it's reading from
-    uint32_t read_addr = dma_channel_hw_addr(dma_channel)->read_addr;
-    uint32_t base = (uint32_t)dma_ring_buffer;
-    // Convert byte offset to sample index
-    return ((read_addr - base) >> 2) & (DMA_RING_SIZE - 1);
-}
+static void audio_dma_irq_handler(void) {
+    uint32_t ints = dma_hw->ints1;
+    uint32_t mask = 0;
+    if (dma_channel_a >= 0) mask |= (1u << dma_channel_a);
+    if (dma_channel_b >= 0) mask |= (1u << dma_channel_b);
+    ints &= mask;
+    if (!ints) return;
 
-// Calculate samples ahead of DMA (positive = good, negative = DMA caught up)
-static inline int32_t get_buffer_headroom(void) {
-    if (!audio_running) return DMA_RING_SIZE;
-    uint32_t read_pos = get_dma_read_pos();
-    int32_t ahead = (int32_t)ring_write_pos - (int32_t)read_pos;
-    if (ahead < 0) ahead += DMA_RING_SIZE;
-    return ahead;
+    if ((dma_channel_a >= 0) && (ints & (1u << dma_channel_a))) {
+        dma_hw->ints1 = (1u << dma_channel_a);
+        dma_channel_set_read_addr(dma_channel_a, dma_buffers[0], false);
+        dma_channel_set_trans_count(dma_channel_a, dma_transfer_count, false);
+        dma_buffers_free_mask |= 1u;
+    }
+
+    if ((dma_channel_b >= 0) && (ints & (1u << dma_channel_b))) {
+        dma_hw->ints1 = (1u << dma_channel_b);
+        dma_channel_set_read_addr(dma_channel_b, dma_buffers[1], false);
+        dma_channel_set_trans_count(dma_channel_b, dma_transfer_count, false);
+        dma_buffers_free_mask |= 2u;
+    }
 }
 
 void audio_submit(void) {
@@ -455,9 +536,10 @@ void audio_submit(void) {
     // DEBUG: Track buffer headroom
     audio_frame_count++;
     if (audio_running && (audio_frame_count % 300) == 0) {
-        int32_t headroom = get_buffer_headroom();
-        printf("Audio: headroom=%ld samples, ym=%d sn=%d\n", 
-               headroom, saved_ym_samples, saved_sn_samples);
+         uint32_t free_mask = dma_buffers_free_mask;
+         int free_buffers = (int)((free_mask & 1u) != 0) + (int)((free_mask & 2u) != 0);
+         printf("Audio: free_buffers=%d, ym=%d sn=%d\n",
+             free_buffers, saved_ym_samples, saved_sn_samples);
     }
     
     // Always send fixed sample count for consistent timing
