@@ -490,6 +490,14 @@ z80_arm_exec:
     beq     op_be_cp_hl
     cmp     r0, #0xBF
     beq     op_bf_cp_a
+    cmp     r0, #0xC6
+    beq     op_c6_add_a_n
+    cmp     r0, #0xCE
+    beq     op_ce_adc_a_n
+    cmp     r0, #0xD6
+    beq     op_d6_sub_n
+    cmp     r0, #0xDE
+    beq     op_de_sbc_a_n
     cmp     r0, #0xE6
     beq     op_e6_and_n
     cmp     r0, #0xEE
@@ -3298,6 +3306,51 @@ op_fe_cp_n:
     bl      RdZ80
     uxtb    r1, r0
     bl      .Lcp_common
+    add     r7, r7, #2
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+/* Immediate 8-bit ALU ops (7 cycles): fetch byte at PC+1 */
+op_c6_add_a_n:
+    add     r0, r7, #1
+    uxth    r0, r0
+    bl      RdZ80
+    uxtb    r1, r0
+    bl      .Ladd_a_r1_common
+    add     r7, r7, #2
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+op_ce_adc_a_n:
+    add     r0, r7, #1
+    uxth    r0, r0
+    bl      RdZ80
+    uxtb    r1, r0
+    bl      .Ladc_r1_common
+    add     r7, r7, #2
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+op_d6_sub_n:
+    add     r0, r7, #1
+    uxth    r0, r0
+    bl      RdZ80
+    uxtb    r1, r0
+    bl      .Lsub_r1_common
+    add     r7, r7, #2
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+op_de_sbc_a_n:
+    add     r0, r7, #1
+    uxth    r0, r0
+    bl      RdZ80
+    uxtb    r1, r0
+    bl      .Lsbc_r1_common
     add     r7, r7, #2
     subs    r4, r4, #7
     bgt     .Lloop
