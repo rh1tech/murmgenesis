@@ -300,6 +300,14 @@ z80_arm_exec:
     beq     op_da_jp_c
     cmp     r0, #0xE9
     beq     op_e9_jp_hl
+    cmp     r0, #0xEB
+    beq     op_eb_ex_de_hl
+    cmp     r0, #0xD9
+    beq     op_d9_exx
+    cmp     r0, #0xE3
+    beq     op_e3_ex_sp_hl
+    cmp     r0, #0xF9
+    beq     op_f9_ld_sp_hl
     cmp     r0, #0x76
     beq     .Lfallback        /* HALT: use C core for now */
     cmp     r0, #0xC3
@@ -1551,6 +1559,84 @@ op_08_ex_af_af1:
     strh    r5, [r6, #CPU_AF1]
     add     r7, r7, #1
     subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0xEB: EX DE,HL (4 cycles) */
+op_eb_ex_de_hl:
+    ldrh    r5, [r6, #CPU_DE]
+    ldrh    r2, [r6, #CPU_HL]
+    strh    r2, [r6, #CPU_DE]
+    strh    r5, [r6, #CPU_HL]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0xD9: EXX (4 cycles) */
+op_d9_exx:
+    ldrh    r5, [r6, #CPU_BC]
+    ldrh    r2, [r6, #CPU_BC1]
+    strh    r2, [r6, #CPU_BC]
+    strh    r5, [r6, #CPU_BC1]
+    ldrh    r5, [r6, #CPU_DE]
+    ldrh    r2, [r6, #CPU_DE1]
+    strh    r2, [r6, #CPU_DE]
+    strh    r5, [r6, #CPU_DE1]
+    ldrh    r5, [r6, #CPU_HL]
+    ldrh    r2, [r6, #CPU_HL1]
+    strh    r2, [r6, #CPU_HL]
+    strh    r5, [r6, #CPU_HL1]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0xF9: LD SP,HL (6 cycles) */
+op_f9_ld_sp_hl:
+    ldrh    r5, [r6, #CPU_HL]
+    strh    r5, [r6, #CPU_SP]
+    add     r7, r7, #1
+    subs    r4, r4, #6
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0xE3: EX (SP),HL (19 cycles) */
+op_e3_ex_sp_hl:
+    /* Read word at (SP) */
+    ldrh    r2, [r6, #CPU_SP]
+    uxth    r2, r2
+    mov     r0, r2
+    bl      RdZ80
+    uxtb    r5, r0             /* low */
+    ldrh    r2, [r6, #CPU_SP]
+    add     r2, r2, #1
+    uxth    r2, r2
+    mov     r0, r2
+    bl      RdZ80
+    uxtb    r0, r0             /* high */
+    orr     r5, r5, r0, lsl #8
+    uxth    r5, r5
+
+    /* Write HL back to (SP) */
+    ldrh    r3, [r6, #CPU_HL]
+    uxtb    r1, r3             /* low */
+    ldrh    r2, [r6, #CPU_SP]
+    uxth    r2, r2
+    mov     r0, r2
+    bl      WrZ80
+    ldrh    r3, [r6, #CPU_HL]
+    lsrs    r1, r3, #8         /* high */
+    uxtb    r1, r1
+    ldrh    r2, [r6, #CPU_SP]
+    add     r0, r2, #1
+    uxth    r0, r0
+    bl      WrZ80
+
+    /* HL = old (SP) */
+    strh    r5, [r6, #CPU_HL]
+    add     r7, r7, #1
+    subs    r4, r4, #19
     bgt     .Lloop
     b       .Lreturn
 
