@@ -23,7 +23,7 @@
 
 /* Constants */
 .equ Z80_FREQ_DIVISOR, 15
-.equ Z80_ICOUNT_OFFSET, 84  /* Offset of ICount in Z80 structure */
+.equ Z80_ICOUNT_OFFSET, 32  /* Offset of ICount in Z80 structure - verified: sizeof(pair)*12 + 3 bytes + 1 padding + 4 = 32 */
 
 /*
  * byte RdZ80(register word Addr)

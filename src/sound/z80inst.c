@@ -27,6 +27,13 @@ __license__ = "GPLv3"
 #include "gwenesis_sn76489.h"
 #include "gwenesis_savestate.h"
 
+/* Set to 1 to use ARM assembly Z80 core, 0 for C core */
+#define USE_Z80_ARM_ASM 1
+
+#if USE_Z80_ARM_ASM
+#include "z80_arm.h"
+#endif
+
 #if GNW_TARGET_MARIO !=0 || GNW_TARGET_ZELDA!=0
   #pragma GCC optimize("Ofast")
 #endif
@@ -101,7 +108,11 @@ current_timeslice = 0;
   if ((reset_once == 1) && (bus_ack == 0) && (reset == 0)) {
 
    // z80_log("z80_run", "%1d%1d%1d||zclk=%d,tgt=%d",reset_once, bus_ack, reset, zclk, target);
+#if USE_Z80_ARM_ASM
+    rem = z80_arm_exec(current_timeslice / Z80_FREQ_DIVISOR);
+#else
     rem = ExecZ80(&cpu, current_timeslice / Z80_FREQ_DIVISOR);
+#endif
 
   }
 

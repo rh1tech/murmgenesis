@@ -84,6 +84,7 @@ set(GWENESIS_SOURCES
     # Assembly instruction handlers disabled (256KB jump table doesn't fit in RAM)
     # src/cpus/M68K/m68k_ops_opt.S
     src/cpus/Z80/Z80.c
+    src/cpus/Z80/z80_arm.S
     # IO
     src/io/gwenesis_io.c
     # Sound
