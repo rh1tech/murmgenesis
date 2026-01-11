@@ -89,9 +89,11 @@ i2s_config_t i2s_get_default_config(void) {
 }
 
 void i2s_init(i2s_config_t *config) {
+#if ENABLE_LOGGING
     printf("Audio: Initializing I2S with chained double-buffer DMA...\n");
     printf("Audio: Sample rate: %u Hz, DMA buffer size: %lu frames\n",
            (unsigned)config->sample_freq, (unsigned long)config->dma_trans_count);
+#endif
     
     audio_pio = config->pio;
     dma_transfer_count = config->dma_trans_count;
@@ -115,7 +117,9 @@ void i2s_init(i2s_config_t *config) {
     // Claim state machine
     audio_sm = pio_claim_unused_sm(audio_pio, true);
     config->sm = audio_sm;
+#if ENABLE_LOGGING
     printf("Audio: Using PIO0 SM%d\n", audio_sm);
+#endif
     
     // Add PIO program
     uint offset = pio_add_program(audio_pio, &audio_i2s_program);
@@ -129,8 +133,10 @@ void i2s_init(i2s_config_t *config) {
     uint32_t sys_clk = clock_get_hz(clk_sys);
     uint32_t divider = sys_clk * 4 / config->sample_freq;
     pio_sm_set_clkdiv_int_frac(audio_pio, audio_sm, divider >> 8u, divider & 0xffu);
+#if ENABLE_LOGGING
         printf("Audio: Clock divider: %u.%u (sys=%lu MHz)\n",
             (unsigned)(divider >> 8u), (unsigned)(divider & 0xffu), (unsigned long)(sys_clk / 1000000));
+#endif
     
     // Validate transfer count fits our static buffers
     dma_transfer_count = config->dma_trans_count;
@@ -156,7 +162,9 @@ void i2s_init(i2s_config_t *config) {
     dma_channel_a = AUDIO_DMA_CH_A;
     dma_channel_b = AUDIO_DMA_CH_B;
     config->dma_channel = (uint8_t)dma_channel_a;
+#if ENABLE_LOGGING
     printf("Audio: Using DMA channels %d/%d (IRQ=%d)\n", dma_channel_a, dma_channel_b, AUDIO_DMA_IRQ);
+#endif
 
     // Configure DMA channels in ping-pong chain
     dma_channel_config cfg_a = dma_channel_get_default_config(dma_channel_a);
@@ -209,7 +217,9 @@ void i2s_init(i2s_config_t *config) {
     dma_buffers_free_mask = (1u << DMA_BUFFER_COUNT) - 1u; // both free
     audio_running = false;
 
+#if ENABLE_LOGGING
     printf("Audio: I2S ready (double buffer DMA with %d buffer pre-roll)\n", PREROLL_BUFFERS);
+#endif
 }
 
 void i2s_dma_write_count(i2s_config_t *config, const int16_t *samples, uint32_t sample_count) {
@@ -538,8 +548,10 @@ void audio_submit(void) {
     if (audio_running && (audio_frame_count % 300) == 0) {
          uint32_t free_mask = dma_buffers_free_mask;
          int free_buffers = (int)((free_mask & 1u) != 0) + (int)((free_mask & 2u) != 0);
+#if ENABLE_LOGGING
          printf("Audio: free_buffers=%d, ym=%d sn=%d\n",
              free_buffers, saved_ym_samples, saved_sn_samples);
+#endif
     }
     
     // Always send fixed sample count for consistent timing
@@ -565,7 +577,9 @@ bool audio_is_enabled(void) {
 }
 
 void audio_debug_buffer_values(void) {
+#if ENABLE_LOGGING
     printf("Audio: ym=%d sn=%d\n", ym2612_index, sn76489_index);
+#endif
 }
 
 i2s_config_t* audio_get_i2s_config(void) {

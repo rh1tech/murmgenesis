@@ -53,8 +53,12 @@
 // Profiling
 //=============================================================================
 
-// Simple logging
+// Simple logging (conditional on ENABLE_LOGGING)
+#if ENABLE_LOGGING
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#else
+#define LOG(fmt, ...) do {} while(0)
+#endif
 
 #define ENABLE_PROFILING 1
 #define DISABLE_FRAME_LIMITING 0
@@ -349,6 +353,7 @@ static bool load_rom(const char *filename) {
 // Initialize Genesis emulator
 static void genesis_init(void) {
     // Print M68K struct offsets for assembly optimization
+#if ENABLE_LOGGING
     printf("M68K struct offsets:\n");
     printf("  cycles:      %zu\n", offsetof(m68ki_cpu_core, cycles));
     printf("  cycle_end:   %zu\n", offsetof(m68ki_cpu_core, cycle_end));
@@ -357,6 +362,7 @@ static void genesis_init(void) {
     printf("  ir:          %zu\n", offsetof(m68ki_cpu_core, ir));
     printf("  stopped:     %zu\n", offsetof(m68ki_cpu_core, stopped));
     printf("  sizeof:      %zu\n", sizeof(m68ki_cpu_core));
+#endif
     
     // Clear RAM
     memset(M68K_RAM, 0, MAX_RAM_SIZE);
@@ -385,7 +391,8 @@ static void genesis_init(void) {
     gwenesis_vdp_set_buffer((uint8_t *)SCREEN);
     
     // Clear screen buffer to avoid garbage (Genesis NTSC is 224 lines, buffer is 240)
-    memset(SCREEN, 0, sizeof(SCREEN));
+    // Use index 1 instead of 0 - index 0 causes HDMI issues at 378MHz
+    memset(SCREEN, 1, sizeof(SCREEN));
     
     LOG("Genesis initialized\n");
 }
@@ -854,6 +861,10 @@ int main(void) {
     }
     LOG("SD card mounted\n");
     
+    // Clear the screen buffer BEFORE HDMI init - DMA starts scanning immediately
+    // Use index 1 instead of 0 - index 0 causes HDMI issues at 378MHz
+    memset(SCREEN, 1, sizeof(SCREEN));
+    
     // Initialize HDMI on Core 0 - DMA IRQ is timing-critical
     LOG("Initializing HDMI...\n");
     graphics_init(g_out_HDMI);
@@ -903,10 +914,17 @@ int main(void) {
     
     // Set up a simple palette for ROM selector (before calling it)
     LOG("Setting up ROM selector palette...\n");
-    graphics_set_palette(0, 0x000000);      // Black
+    graphics_set_palette(0, 0x020202);      // Very dark (not pure black - HDMI issue at 378MHz)
+    graphics_set_palette(1, 0x020202);      // Near-black (same as 0)
     graphics_set_palette(63, 0xFFFFFF);     // White (max visible index with 0x3F mask)
     graphics_set_palette(32, 0xFF0000);     // Red for title
     graphics_set_palette(16, 0x404040);     // Dark gray for scrollbar
+    graphics_set_palette(42, 0x808080);     // Medium gray (used by warning splash box)
+    graphics_restore_sync_colors();         // Ensure HDMI reserved sync symbols are intact
+
+    // Ensure we don't briefly display uninitialized pixels with the new palette
+    // Use index 1 instead of 0 - index 0 causes HDMI issues at 378MHz
+    memset(SCREEN, 1, sizeof(SCREEN));
     
     // Show ROM selector
     LOG("Showing ROM selector...\n");
@@ -989,6 +1007,7 @@ void gwenesis_io_get_buttons(void) {
     uint32_t pressed = nespad_state & ~prev_nespad_state;  // Newly pressed buttons
     
     if (pressed) {
+#if ENABLE_LOGGING
         printf("P1 Raw state: 0x%08lX | Pressed: 0x%08lX | ", 
                (unsigned long)nespad_state, (unsigned long)pressed);
         if (pressed & DPAD_UP)     printf("UP ");
@@ -1004,6 +1023,7 @@ void gwenesis_io_get_buttons(void) {
         if (pressed & DPAD_LT)     printf("L ");
         if (pressed & DPAD_RT)     printf("R ");
         printf("\n");
+#endif
     }
     prev_nespad_state = nespad_state;
     

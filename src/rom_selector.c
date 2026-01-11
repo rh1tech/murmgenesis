@@ -62,8 +62,8 @@ static int rom_count = 0;
 // Colors for UI elements (8-bit 3-3-2 RGB palette)
 #define COLOR_WHITE 63   // 0b00111111 - bright white
 #define COLOR_GRAY 42    // 0b00101010 - medium gray
-#define COLOR_YELLOW 252 // 0b11111100 - yellow (red + green)
-#define COLOR_RED 224    // 0b11100000 - red
+#define COLOR_YELLOW 48  // Use palette index 48 for yellow (safe range)
+#define COLOR_RED 32     // Palette index 32 = 0xFF0000 (red)
 
 // Smooth scrollbar animation
 static int scrollbar_current_y = 0;  // Current animated position
@@ -75,6 +75,10 @@ static int cursor_target_y = 0;   // Target highlight Y position
 
 // Forward declarations
 static void draw_text_dos(uint8_t *screen, int x, int y, const char *text, uint8_t color);
+
+// Minimal UTF-8 Cyrillic 8x8 renderer (used for boot warning)
+static void draw_text_utf8(uint8_t *screen, int x, int y, const char *text, uint8_t color);
+static void draw_warning_splash(uint8_t *screen);
 
 // Bold 7x9 font for title (wider strokes)
 #define BOLD_FONT_WIDTH 8   // 7px glyph + 1px spacing  
@@ -271,8 +275,13 @@ static void fill_rect(uint8_t *screen, int x, int y, int w, int h, uint8_t color
     if (y + h > SCREEN_HEIGHT) h = SCREEN_HEIGHT - y;
     if (w <= 0 || h <= 0) return;
     
+    // Use index 1 instead of 0 for black - index 0 causes HDMI issues at 378MHz
+    if (color == 0) color = 1;
+    
     for (int yy = y; yy < y + h; ++yy) {
         memset(&screen[yy * SCREEN_WIDTH + x], color, (size_t)w);
+        // Brief yield after each row to avoid starving HDMI DMA at 378MHz
+        __asm volatile("nop\nnop\nnop\nnop");
     }
 }
 
@@ -386,6 +395,179 @@ static void draw_help_text(uint8_t *screen) {
     int x = (SCREEN_WIDTH - text_width) / 2;
     if (x < 0) x = 0;
     draw_text_dos(screen, x, INFO_BASE_Y, help, COLOR_WHITE);
+}
+
+static bool utf8_next_codepoint(const char **p, uint32_t *out_cp) {
+    const unsigned char *s = (const unsigned char *)*p;
+    if (*s == 0) return false;
+
+    if (s[0] < 0x80) {
+        *out_cp = s[0];
+        *p += 1;
+        return true;
+    }
+
+    // 2-byte
+    if ((s[0] & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80) {
+        *out_cp = ((uint32_t)(s[0] & 0x1F) << 6) | (uint32_t)(s[1] & 0x3F);
+        *p += 2;
+        return true;
+    }
+
+    // 3-byte
+    if ((s[0] & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80) {
+        *out_cp = ((uint32_t)(s[0] & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (uint32_t)(s[2] & 0x3F);
+        *p += 3;
+        return true;
+    }
+
+    // Unsupported/invalid sequence: skip one byte
+    *out_cp = '?';
+    *p += 1;
+    return true;
+}
+
+static const uint8_t *glyph_cyrillic_8x8(uint32_t cp) {
+    // Glyph rows use MSB-left bit order (bit 7 = leftmost pixel).
+    static const uint8_t glyph_space[8] = {0,0,0,0,0,0,0,0};
+    static const uint8_t glyph_period[8] = {0,0,0,0,0,0,0x18,0x18};
+    // Make comma clearly different from period (tail down-left)
+    static const uint8_t glyph_comma[8]  = {0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x10};
+    static const uint8_t glyph_qmark[8]  = {0x3C,0x42,0x02,0x0C,0x10,0x00,0x10,0x00};
+
+    // Cyrillic glyphs tuned to look like lowercase Russian where possible
+    // (so text doesn't read as Latin lookalikes).
+    static const uint8_t glyph_E_cap[8]  = {0x7E,0x40,0x40,0x7C,0x40,0x40,0x7E,0x00}; // Е
+    static const uint8_t glyph_EE_cap[8] = {0x3C,0x42,0x02,0x1E,0x02,0x42,0x3C,0x00}; // Э
+
+    static const uint8_t glyph_a[8] = {0x00,0x00,0x3C,0x02,0x3E,0x42,0x3E,0x00}; // а
+    // б: shorten by 1 pixel at the bottom (avoid looking tall/bold)
+    static const uint8_t glyph_b[8] = {0x00,0x00,0x3E,0x20,0x3C,0x22,0x3C,0x00}; // б
+    static const uint8_t glyph_v[8] = {0x00,0x00,0x7C,0x42,0x7C,0x42,0x7C,0x00}; // в
+    static const uint8_t glyph_g[8] = {0x00,0x00,0x7E,0x40,0x40,0x40,0x40,0x00}; // г
+    static const uint8_t glyph_e[8] = {0x00,0x00,0x3C,0x42,0x7E,0x40,0x3C,0x00}; // е
+    static const uint8_t glyph_zh[8]= {0x00,0x00,0x5A,0x5A,0x3C,0x5A,0x5A,0x00}; // ж (not used, but safe)
+    // и/й: keep shape but shorten by 1px (clear bottom row)
+    static const uint8_t glyph_i[8] = {0x00,0x00,0x42,0x46,0x4A,0x52,0x62,0x00}; // и
+    static const uint8_t glyph_j[8] = {0x24,0x00,0x42,0x46,0x4A,0x52,0x62,0x00}; // й
+    static const uint8_t glyph_k[8] = {0x00,0x00,0x42,0x44,0x78,0x44,0x42,0x00}; // к
+    static const uint8_t glyph_l[8] = {0x00,0x00,0x1C,0x24,0x44,0x44,0x44,0x00}; // л
+    static const uint8_t glyph_m[8] = {0x00,0x00,0x42,0x66,0x5A,0x42,0x42,0x00}; // м
+    // н: use clear "H"-like shape with mid bar
+    static const uint8_t glyph_n[8] = {0x00,0x00,0x42,0x42,0x7E,0x42,0x42,0x00}; // н
+    static const uint8_t glyph_o[8] = {0x00,0x00,0x3C,0x42,0x42,0x42,0x3C,0x00}; // о
+    static const uint8_t glyph_p[8] = {0x00,0x00,0x7C,0x42,0x42,0x7C,0x40,0x40}; // р (descender)
+    static const uint8_t glyph_s[8] = {0x00,0x00,0x3C,0x42,0x40,0x42,0x3C,0x00}; // с
+    // т: even thinner/lighter (avoid looking bold)
+    static const uint8_t glyph_t[8] = {0x00,0x00,0x1C,0x08,0x08,0x08,0x08,0x00}; // т
+    static const uint8_t glyph_u[8] = {0x00,0x00,0x42,0x42,0x3E,0x02,0x3C,0x00}; // у
+    // ф: smaller/less bold
+    static const uint8_t glyph_f[8] = {0x00,0x18,0x3C,0x5A,0x5A,0x3C,0x18,0x00}; // ф
+    static const uint8_t glyph_yi[8]= {0x00,0x00,0x42,0x42,0x4A,0x7A,0x7A,0x00}; // ы
+    static const uint8_t glyph_ee[8]= {0x00,0x00,0x3C,0x42,0x1E,0x42,0x3C,0x00}; // э
+    // я: avoid looking like Latin 'R' by removing left vertical and emphasizing right loop + left leg
+    static const uint8_t glyph_ya[8]= {0x00,0x00,0x1E,0x12,0x1E,0x0A,0x12,0x00}; // я
+    static const uint8_t glyph_sch[8]={0x00,0x00,0x54,0x54,0x54,0x54,0x7E,0x06}; // щ
+
+    if (cp == ' ') return glyph_space;
+    if (cp == '.') return glyph_period;
+    if (cp == ',') return glyph_comma;
+
+    // Cyrillic uppercase we need
+    switch (cp) {
+        // Map capital И to the same glyph as lowercase и to avoid it reading as Latin 'N'
+        case 0x0418: return glyph_i;      // И
+        case 0x0415: return glyph_E_cap;  // Е
+        case 0x042D: return glyph_EE_cap; // Э
+        default: break;
+    }
+
+    // Cyrillic lowercase used by the warning text
+    switch (cp) {
+                case 0x043F: {
+                    static const uint8_t glyph_pe[8] = {0x00,0x00,0x7E,0x42,0x42,0x42,0x42,0x00}; // п
+                    return glyph_pe;
+                }
+        case 0x0430: return glyph_a;   // а
+        case 0x0431: return glyph_b;   // б
+        case 0x0432: return glyph_v;   // в
+        case 0x0433: return glyph_g;   // г
+        case 0x0435: return glyph_e;   // е
+        case 0x0438: return glyph_i;   // и
+        case 0x0439: return glyph_j;   // й
+        case 0x043A: return glyph_k;   // к
+        case 0x043B: return glyph_l;   // л
+        case 0x043C: return glyph_m;   // м
+        case 0x043D: return glyph_n;   // н
+        case 0x043E: return glyph_o;   // о
+        case 0x0440: return glyph_p;   // р
+        case 0x0441: return glyph_s;   // с
+        case 0x0442: return glyph_t;   // т
+        case 0x0443: return glyph_u;   // у
+        case 0x0444: return glyph_f;   // ф
+        case 0x044C: {
+            static const uint8_t glyph_soft[8] = {0x00,0x00,0x40,0x40,0x7C,0x42,0x7C,0x00}; // ь
+            return glyph_soft;
+        }
+        case 0x044B: return glyph_yi;  // ы
+        case 0x044D: return glyph_ee;  // э
+        case 0x044F: return glyph_ya;  // я
+        case 0x0449: return glyph_sch; // щ
+        case 0x0436: return glyph_zh;  // ж (fallback)
+        default: break;
+    }
+
+    return glyph_qmark;
+}
+
+static void draw_char_8x8_msb(uint8_t *screen, int x, int y, const uint8_t glyph[8], uint8_t color) {
+    for (int row = 0; row < 8; ++row) {
+        int yy = y + row;
+        if (yy < 0 || yy >= SCREEN_HEIGHT) continue;
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < 8; ++col) {
+            int xx = x + col;
+            if (xx < 0 || xx >= SCREEN_WIDTH) continue;
+            if (bits & (1u << (7 - col))) {
+                screen[yy * SCREEN_WIDTH + xx] = color;
+            }
+        }
+    }
+}
+
+static void draw_text_utf8(uint8_t *screen, int x, int y, const char *text, uint8_t color) {
+    int cursor_x = x;
+    int cursor_y = y;
+
+    const char *p = text;
+    uint32_t cp = 0;
+    while (utf8_next_codepoint(&p, &cp)) {
+        if (cp == '\n') {
+            cursor_x = x;
+            cursor_y += DOS_LINE_HEIGHT;
+            continue;
+        }
+        const uint8_t *glyph = glyph_cyrillic_8x8(cp);
+        draw_char_8x8_msb(screen, cursor_x, cursor_y, glyph, color);
+        cursor_x += DOS_FONT_ADVANCE;
+        if (cursor_x + DOS_FONT_ADVANCE >= SCREEN_WIDTH) {
+            cursor_x = x;
+            cursor_y += DOS_LINE_HEIGHT;
+        }
+    }
+}
+
+static void draw_warning_splash(uint8_t *screen) {
+    // Cyrillic warning text
+    const char *msg =
+        "Это тестовая сборка,\n"
+        "И она еще сырая.\n"
+        "Если все сгорит нафиг,\n"
+        "таков путь";
+
+    int text_x = 26;
+    int text_y = 80;
+    draw_text_utf8(screen, text_x, text_y, msg, COLOR_RED);
 }
 
 // CP437 8x8 font: public domain VGA bitmaps (basic Latin + core block/line glyphs we use)
@@ -736,8 +918,8 @@ static void draw_single_row(uint8_t *screen, int row_idx, int scroll_offset, int
         display_name[MAX_ROM_NAME_CHARS] = '\0';
     }
     
-    // Draw text - black if overlapping highlight, white otherwise
-    draw_text(screen, MENU_X, text_y, display_name, overlaps_cursor ? 0 : 63);
+    // Draw text - near-black if overlapping highlight, white otherwise
+    draw_text(screen, MENU_X, text_y, display_name, overlaps_cursor ? 1 : 63);
 }
 
 // Render ROM menu with smooth pixel-based cursor sliding - dirty rect approach
@@ -829,26 +1011,29 @@ static void render_rom_menu(uint8_t *screen, int selected, int scroll_offset, bo
 }
 
 bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *screen_buffer) {
+#if ENABLE_LOGGING
     printf("ROM Selector: Starting...\n");
-    
-    // Clear screen to a test pattern first to verify display is working
-    printf("ROM Selector: Drawing test pattern...\n");
-    for (int i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT; i++) {
-        screen_buffer[i] = (i / SCREEN_WIDTH) % 2 ? 63 : 0;  // Alternating white/black lines (use palette 0-63)
-    }
-    sleep_ms(1000);  // Show test pattern for 1 second
-    
-    // Clear screen
-    printf("ROM Selector: Clearing screen...\n");
-    memset(screen_buffer, 0, SCREEN_WIDTH * SCREEN_HEIGHT);
-    
-    // Scan for ROMs
+#endif
+
+    // Scan ROMs first while screen is blank
+    memset(screen_buffer, 1, SCREEN_WIDTH * SCREEN_HEIGHT);
     scan_roms();
     
+    // Show warning splash
+    draw_warning_splash(screen_buffer);
+    for (int i = 0; i < 3000; ++i) {
+        sleep_ms(1);
+    }
+    
+    // Go directly to ROM selector - no clearing in between
+#if ENABLE_LOGGING
     printf("ROM Selector: Found %d ROMs\n", rom_count);
+#endif
+#if ENABLE_LOGGING
     for (int i = 0; i < rom_count && i < 10; i++) {
         printf("  %d: %s\n", i, rom_list[i].display_name);
     }
+#endif
     
     int selected = 0;
     int scroll_offset = 0;
@@ -866,11 +1051,15 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
     prev_cursor_y = cursor_current_y;
     render_rom_menu(screen_buffer, selected, scroll_offset, true);
     
+#if ENABLE_LOGGING
     printf("ROM Selector: Menu rendered, waiting for input...\n");
+#endif
     
     // If no ROMs found, wait a bit and return false
     if (rom_count == 0) {
+#if ENABLE_LOGGING
         printf("ROM Selector: No ROMs found!\n");
+#endif
         sleep_ms(3000);
         return false;
     }
@@ -923,7 +1112,9 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
         } else {
             static int not_conn = 0;
             if ((not_conn++ % 100) == 0) {
-                printf("USB gamepad not connected\n");
+    #if ENABLE_LOGGING
+            printf("USB gamepad not connected\n");
+#endif
             }
         }
 #endif

@@ -87,10 +87,12 @@ void *psram_malloc(size_t size) {
         void *ptr = (void *)(header + 1);
         // Only log large allocations or when getting low on memory
         size_t remaining = PERM_SIZE - (psram_offset + total_size);
-        if (size >= 65536 || remaining < 256 * 1024) {
+        if ((size >= 65536 || remaining < 256 * 1024)) {
+#if ENABLE_LOGGING
             printf("psram_malloc(%d) -> %p Total: %d Remaining: %d\n", 
                    (int)size, ptr, (int)(psram_offset + total_size), (int)remaining);
             fflush(stdout);
+#endif
         }
         psram_offset += total_size;
         return ptr;

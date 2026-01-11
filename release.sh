@@ -72,7 +72,7 @@ MINOR=$((10#$MINOR))
 MAJOR=$((10#$MAJOR))
 
 # Validate
-if [[ $MAJOR -lt 1 ]]; then
+if [[ $MAJOR -lt 0 ]]; then
     echo -e "${RED}Error: Major version must be >= 1${NC}"
     exit 1
 fi
