@@ -62,11 +62,17 @@
 // Use assembly-optimized M68K loop (set to 0 to use original C loop for debugging)
 #define USE_M68K_FAST_LOOP 1
 
-// Adaptive frame skipping (video-only): when the emulation workload exceeds the
-// target frame budget, we temporarily skip some renders to keep audio/emulation
-// stable. Safety bounds prevent long streaks of unrendered frames and parity
-// fairness avoids sampling only even/odd frames (important for sprite blinking).
-#define ENABLE_ADAPTIVE_FRAMESKIP 1
+// Frame skipping (video-only): reduce rendering cost to keep emulation/audio stable.
+// The user requested a deterministic pattern (no adaptiveness).
+#define ENABLE_ADAPTIVE_FRAMESKIP 0
+#define ENABLE_CONSTANT_FRAMESKIP 1
+
+// Constant frameskip pattern:
+// - Pattern length is in frames
+// - Bit i (LSB=frame 0) indicates whether to render that frame (1) or skip (0)
+// Default: render 5 frames then skip 1 => ~50Hz presentation from 60Hz.
+#define FRAMESKIP_PATTERN_LEN 6u
+#define FRAMESKIP_PATTERN_MASK 0x1Fu  // 0b01_1111 : render frames 0-4, skip frame 5
 #define FRAMESKIP_MAX_CONSECUTIVE 4
 #define FRAMESKIP_MAX_BACKLOG_FRAMES 8
 #define FRAMESKIP_RENDER_COST_DEFAULT_US 4000u
@@ -448,8 +454,10 @@ static void __time_critical_func(emulation_loop)(void) {
     uint64_t first_frame_time = 0;
     uint32_t frame_num = 0;
     uint32_t consecutive_skipped_frames = 0;
-    uint32_t frame_budget_us = 16666;
     uint64_t frame_work_start_us = 0;
+
+#if ENABLE_ADAPTIVE_FRAMESKIP
+    uint32_t frame_budget_us = 16666;
     uint32_t frame_work_us = 0;
     uint32_t audio_wait_us_local = 0;
 
@@ -458,13 +466,16 @@ static void __time_critical_func(emulation_loop)(void) {
     uint32_t render_cost_ema_us = 0;         // EMA of render cost when we do render
     uint32_t force_render_next = 0;          // number of upcoming frames to force render (burst)
     uint32_t frameskip_rng = 0xC001D00Du;    // simple PRNG state for dithering
+#endif
 
     while (1) {
         int hint_counter = gwenesis_vdp_regs[10];
         
         bool is_pal = REG1_PAL;
         // Target frame budget for adaptive frame skipping
+    #if ENABLE_ADAPTIVE_FRAMESKIP
         frame_budget_us = 1000000u / (is_pal ? GWENESIS_REFRESH_RATE_PAL : GWENESIS_REFRESH_RATE_NTSC);
+    #endif
         screen_width = REG12_MODE_H40 ? 320 : 256;
         screen_height = is_pal ? 240 : 224;
         lines_per_frame = is_pal ? LINES_PER_FRAME_PAL : LINES_PER_FRAME_NTSC;
@@ -481,8 +492,13 @@ static void __time_critical_func(emulation_loop)(void) {
         }
 
         // Decide whether to render this frame (video-only). Emulation + audio run every frame.
-        // If we're consistently too slow, build backlog_us and skip some renders.
         bool render_this_frame = true;
+
+    #if ENABLE_CONSTANT_FRAMESKIP
+        // Deterministic render/skip pattern to avoid performance oscillations.
+        const uint32_t pat_idx = (FRAMESKIP_PATTERN_LEN ? (frame_num % FRAMESKIP_PATTERN_LEN) : 0u);
+        render_this_frame = ((FRAMESKIP_PATTERN_MASK >> pat_idx) & 1u) != 0u;
+    #endif
 #if ENABLE_ADAPTIVE_FRAMESKIP
         // If we have backlog, prefer skipping render (saves render_cost_ema_us).
         uint32_t estimated_render_cost_us = render_cost_ema_us ? render_cost_ema_us : FRAMESKIP_RENDER_COST_DEFAULT_US;
@@ -494,11 +510,6 @@ static void __time_critical_func(emulation_loop)(void) {
                 render_this_frame = false;
             }
         }
-        // Safety: always render at least once every (FRAMESKIP_MAX_CONSECUTIVE + 1) frames.
-        if (consecutive_skipped_frames >= FRAMESKIP_MAX_CONSECUTIVE) {
-            render_this_frame = true;
-        }
-
 #if FRAMESKIP_DITHER_RENDER_WHEN_SKIPPING
         // If we're in skip mode and would skip, occasionally render anyway to avoid
         // getting phase-locked to game blinking patterns.
@@ -513,6 +524,11 @@ static void __time_critical_func(emulation_loop)(void) {
         }
 #endif
 #endif
+
+        // Safety: always render at least once every (FRAMESKIP_MAX_CONSECUTIVE + 1) frames.
+        if (consecutive_skipped_frames >= FRAMESKIP_MAX_CONSECUTIVE) {
+            render_this_frame = true;
+        }
         if (force_render) {
             render_this_frame = true;
         }
@@ -676,7 +692,9 @@ static void __time_critical_func(emulation_loop)(void) {
         // ==================================================================
 
         // Compute work time for this frame (emulation + optional render), excluding audio wait.
+    #if ENABLE_ADAPTIVE_FRAMESKIP
         frame_work_us = (uint32_t)(time_us_64() - frame_work_start_us);
+    #endif
         
         // Wait for previous audio submission to complete 
         // This prevents buffer race condition where Core 0 overwrites audio
@@ -686,7 +704,9 @@ static void __time_critical_func(emulation_loop)(void) {
         while (!audio_done && frame_num > 0) {
             tight_loop_contents();
         }
+    #if ENABLE_ADAPTIVE_FRAMESKIP
         audio_wait_us_local = (uint32_t)(time_us_64() - audio_wait_start_us);
+    #endif
         PROFILE_END(audio_wait_time);
         audio_done = false;
 
