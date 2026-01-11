@@ -376,6 +376,110 @@ z80_arm_exec:
     beq     op_96_sub_hl
     cmp     r0, #0x97
     beq     op_97_sub_a
+    cmp     r0, #0x88
+    beq     op_88_adc_a_b
+    cmp     r0, #0x89
+    beq     op_89_adc_a_c
+    cmp     r0, #0x8A
+    beq     op_8a_adc_a_d
+    cmp     r0, #0x8B
+    beq     op_8b_adc_a_e
+    cmp     r0, #0x8C
+    beq     op_8c_adc_a_h
+    cmp     r0, #0x8D
+    beq     op_8d_adc_a_l
+    cmp     r0, #0x8E
+    beq     op_8e_adc_a_hl
+    cmp     r0, #0x8F
+    beq     op_8f_adc_a_a
+    cmp     r0, #0x98
+    beq     op_98_sbc_a_b
+    cmp     r0, #0x99
+    beq     op_99_sbc_a_c
+    cmp     r0, #0x9A
+    beq     op_9a_sbc_a_d
+    cmp     r0, #0x9B
+    beq     op_9b_sbc_a_e
+    cmp     r0, #0x9C
+    beq     op_9c_sbc_a_h
+    cmp     r0, #0x9D
+    beq     op_9d_sbc_a_l
+    cmp     r0, #0x9E
+    beq     op_9e_sbc_a_hl
+    cmp     r0, #0x9F
+    beq     op_9f_sbc_a_a
+    cmp     r0, #0xA0
+    beq     op_a0_and_b
+    cmp     r0, #0xA1
+    beq     op_a1_and_c
+    cmp     r0, #0xA2
+    beq     op_a2_and_d
+    cmp     r0, #0xA3
+    beq     op_a3_and_e
+    cmp     r0, #0xA4
+    beq     op_a4_and_h
+    cmp     r0, #0xA5
+    beq     op_a5_and_l
+    cmp     r0, #0xA6
+    beq     op_a6_and_hl
+    cmp     r0, #0xA7
+    beq     op_a7_and_a
+    cmp     r0, #0xA8
+    beq     op_a8_xor_b
+    cmp     r0, #0xA9
+    beq     op_a9_xor_c
+    cmp     r0, #0xAA
+    beq     op_aa_xor_d
+    cmp     r0, #0xAB
+    beq     op_ab_xor_e
+    cmp     r0, #0xAC
+    beq     op_ac_xor_h
+    cmp     r0, #0xAD
+    beq     op_ad_xor_l
+    cmp     r0, #0xAE
+    beq     op_ae_xor_hl
+    cmp     r0, #0xAF
+    beq     op_af_xor_a
+    cmp     r0, #0xB0
+    beq     op_b0_or_b
+    cmp     r0, #0xB1
+    beq     op_b1_or_c
+    cmp     r0, #0xB2
+    beq     op_b2_or_d
+    cmp     r0, #0xB3
+    beq     op_b3_or_e
+    cmp     r0, #0xB4
+    beq     op_b4_or_h
+    cmp     r0, #0xB5
+    beq     op_b5_or_l
+    cmp     r0, #0xB6
+    beq     op_b6_or_hl
+    cmp     r0, #0xB7
+    beq     op_b7_or_a
+    cmp     r0, #0xB8
+    beq     op_b8_cp_b
+    cmp     r0, #0xB9
+    beq     op_b9_cp_c
+    cmp     r0, #0xBA
+    beq     op_ba_cp_d
+    cmp     r0, #0xBB
+    beq     op_bb_cp_e
+    cmp     r0, #0xBC
+    beq     op_bc_cp_h
+    cmp     r0, #0xBD
+    beq     op_bd_cp_l
+    cmp     r0, #0xBE
+    beq     op_be_cp_hl
+    cmp     r0, #0xBF
+    beq     op_bf_cp_a
+    cmp     r0, #0xE6
+    beq     op_e6_and_n
+    cmp     r0, #0xEE
+    beq     op_ee_xor_n
+    cmp     r0, #0xF6
+    beq     op_f6_or_n
+    cmp     r0, #0xFE
+    beq     op_fe_cp_n
     b       .Lfallback
 
 /* 0x00: NOP (4 cycles) */
@@ -2391,6 +2495,584 @@ op_97_sub_a:
 .Lsub_r1_7:
     bl      .Lsub_r1_common
     add     r7, r7, #1
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0x88-0x8F: ADC A,r/(HL) */
+op_88_adc_a_b:
+    ldrh    r1, [r6, #CPU_BC]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Ladc_r1_4
+op_89_adc_a_c:
+    ldrh    r1, [r6, #CPU_BC]
+    uxtb    r1, r1
+    b       .Ladc_r1_4
+op_8a_adc_a_d:
+    ldrh    r1, [r6, #CPU_DE]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Ladc_r1_4
+op_8b_adc_a_e:
+    ldrh    r1, [r6, #CPU_DE]
+    uxtb    r1, r1
+    b       .Ladc_r1_4
+op_8c_adc_a_h:
+    ldrh    r1, [r6, #CPU_HL]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Ladc_r1_4
+op_8d_adc_a_l:
+    ldrh    r1, [r6, #CPU_HL]
+    uxtb    r1, r1
+    b       .Ladc_r1_4
+op_8e_adc_a_hl:
+    ldrh    r5, [r6, #CPU_HL]
+    uxth    r0, r5
+    bl      RdZ80
+    uxtb    r1, r0
+    b       .Ladc_r1_7
+op_8f_adc_a_a:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r1, r5, #8
+    uxtb    r1, r1
+    b       .Ladc_r1_4
+
+.Ladc_r1_common:
+    /* r1 = operand */
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8         /* r0 = A */
+    uxtb    r0, r0
+    uxtb    r1, r1
+    uxtb    r2, r5             /* r2 = F */
+    and     r2, r2, #F_C       /* r2 = carry-in (0/1) */
+
+    adds    r3, r0, r1         /* r3 = A + op */
+    adds    r3, r3, r2         /* r3 = A + op + c */
+    lsrs    r12, r3, #8        /* C out */
+    uxtb    r3, r3             /* r3 = result */
+
+    /* Z,S */
+    cmp     r3, #0
+    it      eq
+    orreq   r12, r12, #F_Z
+    tst     r3, #0x80
+    it      ne
+    orrne   r12, r12, #F_S
+
+    /* H: (A ^ op ^ res) & 0x10 */
+    eor     r2, r0, r1
+    eor     r2, r2, r3
+    tst     r2, #0x10
+    it      ne
+    orrne   r12, r12, #F_H
+
+    /* V: ~(A^op) & (op^res) & 0x80 */
+    eor     r2, r0, r1
+    mvn     r2, r2
+    eor     r1, r1, r3         /* r1 = op^res */
+    and     r2, r2, r1
+    tst     r2, #0x80
+    it      ne
+    orrne   r12, r12, #F_V
+
+    /* store AF */
+    lsls    r5, r3, #8
+    orr     r5, r5, r12
+    strh    r5, [r6, #CPU_AF]
+    bx      lr
+
+.Ladc_r1_4:
+    bl      .Ladc_r1_common
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+.Ladc_r1_7:
+    bl      .Ladc_r1_common
+    add     r7, r7, #1
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0x98-0x9F: SBC A,r/(HL) */
+op_98_sbc_a_b:
+    ldrh    r1, [r6, #CPU_BC]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lsbc_r1_4
+op_99_sbc_a_c:
+    ldrh    r1, [r6, #CPU_BC]
+    uxtb    r1, r1
+    b       .Lsbc_r1_4
+op_9a_sbc_a_d:
+    ldrh    r1, [r6, #CPU_DE]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lsbc_r1_4
+op_9b_sbc_a_e:
+    ldrh    r1, [r6, #CPU_DE]
+    uxtb    r1, r1
+    b       .Lsbc_r1_4
+op_9c_sbc_a_h:
+    ldrh    r1, [r6, #CPU_HL]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lsbc_r1_4
+op_9d_sbc_a_l:
+    ldrh    r1, [r6, #CPU_HL]
+    uxtb    r1, r1
+    b       .Lsbc_r1_4
+op_9e_sbc_a_hl:
+    ldrh    r5, [r6, #CPU_HL]
+    uxth    r0, r5
+    bl      RdZ80
+    uxtb    r1, r0
+    b       .Lsbc_r1_7
+op_9f_sbc_a_a:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r1, r5, #8
+    uxtb    r1, r1
+    b       .Lsbc_r1_4
+
+.Lsbc_r1_common:
+    /* r1 = operand */
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8         /* r0 = A */
+    uxtb    r0, r0
+    uxtb    r1, r1
+    uxtb    r2, r5             /* r2 = F */
+    and     r2, r2, #F_C       /* r2 = carry-in / borrow-in (0/1) */
+
+    adds    r3, r1, r2         /* r3 = op + c */
+    uxtb    r3, r3
+    cmp     r0, r3
+    ite     lo
+    movlo   r12, #1            /* borrow */
+    movhs   r12, #0
+    subs    r3, r0, r3         /* r3 = A - (op+c) */
+    uxtb    r3, r3
+
+    orr     r12, r12, #F_N
+
+    /* Z,S */
+    cmp     r3, #0
+    it      eq
+    orreq   r12, r12, #F_Z
+    tst     r3, #0x80
+    it      ne
+    orrne   r12, r12, #F_S
+
+    /* H: (A ^ op ^ res) & 0x10 */
+    eor     r2, r0, r1
+    eor     r2, r2, r3
+    tst     r2, #0x10
+    it      ne
+    orrne   r12, r12, #F_H
+
+    /* V: (A^op) & (A^res) & 0x80 */
+    eor     r2, r0, r1
+    eor     r1, r0, r3         /* r1 = A^res */
+    and     r2, r2, r1
+    tst     r2, #0x80
+    it      ne
+    orrne   r12, r12, #F_V
+
+    /* store AF */
+    lsls    r5, r3, #8
+    orr     r5, r5, r12
+    strh    r5, [r6, #CPU_AF]
+    bx      lr
+
+.Lsbc_r1_4:
+    bl      .Lsbc_r1_common
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+.Lsbc_r1_7:
+    bl      .Lsbc_r1_common
+    add     r7, r7, #1
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+/* Helpers: parity flag (even parity) */
+.Lparity_flag:
+    /* r0 = value (low 8 bits). returns r0 = 0 or F_V */
+    uxtb    r0, r0
+    eor     r1, r0, r0, lsr #4
+    eor     r1, r1, r1, lsr #2
+    eor     r1, r1, r1, lsr #1
+    and     r1, r1, #1
+    eor     r1, r1, #1         /* 1 if even parity */
+    and     r0, r1, #1
+    lsls    r0, r0, #2         /* -> 0x04 */
+    bx      lr
+
+/* Generic logic op: compute SZP into r12 (and optionally H) */
+.Llogic_szp:
+    /* r0 = result byte, returns r12 = flags SZP (no H/N/C)
+       NOTE: must preserve r0 (result) for caller. */
+    uxtb    r2, r0
+    movs    r12, #0
+    cmp     r2, #0
+    it      eq
+    orreq   r12, r12, #F_Z
+    tst     r2, #0x80
+    it      ne
+    orrne   r12, r12, #F_S
+    push    {lr}
+    mov     r0, r2
+    bl      .Lparity_flag
+    mov     r3, r0
+    pop     {lr}
+    orr     r12, r12, r3
+    mov     r0, r2
+    bx      lr
+
+/* 0xA0-0xA7: AND r/(HL) */
+op_a0_and_b:
+    ldrh    r1, [r6, #CPU_BC]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Land_r1_4
+op_a1_and_c:
+    ldrh    r1, [r6, #CPU_BC]
+    uxtb    r1, r1
+    b       .Land_r1_4
+op_a2_and_d:
+    ldrh    r1, [r6, #CPU_DE]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Land_r1_4
+op_a3_and_e:
+    ldrh    r1, [r6, #CPU_DE]
+    uxtb    r1, r1
+    b       .Land_r1_4
+op_a4_and_h:
+    ldrh    r1, [r6, #CPU_HL]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Land_r1_4
+op_a5_and_l:
+    ldrh    r1, [r6, #CPU_HL]
+    uxtb    r1, r1
+    b       .Land_r1_4
+op_a6_and_hl:
+    ldrh    r5, [r6, #CPU_HL]
+    uxth    r0, r5
+    bl      RdZ80
+    uxtb    r1, r0
+    b       .Land_r1_7
+op_a7_and_a:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r1, r5, #8
+    uxtb    r1, r1
+    b       .Land_r1_4
+
+.Land_common:
+    /* r1 = operand */
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8
+    uxtb    r0, r0
+    uxtb    r1, r1
+    and     r0, r0, r1         /* r0 = A &= op */
+    push    {lr}
+    bl      .Llogic_szp
+    pop     {lr}
+    orr     r12, r12, #F_H     /* AND sets H */
+    lsls    r5, r0, #8
+    orr     r5, r5, r12
+    strh    r5, [r6, #CPU_AF]
+    bx      lr
+
+.Land_r1_4:
+    bl      .Land_common
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+.Land_r1_7:
+    bl      .Land_common
+    add     r7, r7, #1
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0xB0-0xB7: OR r/(HL) */
+op_b0_or_b:
+    ldrh    r1, [r6, #CPU_BC]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lor_r1_4
+op_b1_or_c:
+    ldrh    r1, [r6, #CPU_BC]
+    uxtb    r1, r1
+    b       .Lor_r1_4
+op_b2_or_d:
+    ldrh    r1, [r6, #CPU_DE]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lor_r1_4
+op_b3_or_e:
+    ldrh    r1, [r6, #CPU_DE]
+    uxtb    r1, r1
+    b       .Lor_r1_4
+op_b4_or_h:
+    ldrh    r1, [r6, #CPU_HL]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lor_r1_4
+op_b5_or_l:
+    ldrh    r1, [r6, #CPU_HL]
+    uxtb    r1, r1
+    b       .Lor_r1_4
+op_b6_or_hl:
+    ldrh    r5, [r6, #CPU_HL]
+    uxth    r0, r5
+    bl      RdZ80
+    uxtb    r1, r0
+    b       .Lor_r1_7
+op_b7_or_a:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r1, r5, #8
+    uxtb    r1, r1
+    b       .Lor_r1_4
+
+.Lor_common:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8
+    uxtb    r0, r0
+    uxtb    r1, r1
+    orr     r0, r0, r1
+    push    {lr}
+    bl      .Llogic_szp
+    pop     {lr}
+    lsls    r5, r0, #8
+    orr     r5, r5, r12
+    strh    r5, [r6, #CPU_AF]
+    bx      lr
+
+.Lor_r1_4:
+    bl      .Lor_common
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+.Lor_r1_7:
+    bl      .Lor_common
+    add     r7, r7, #1
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0xA8-0xAF: XOR r/(HL) */
+op_a8_xor_b:
+    ldrh    r1, [r6, #CPU_BC]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lxor_r1_4
+op_a9_xor_c:
+    ldrh    r1, [r6, #CPU_BC]
+    uxtb    r1, r1
+    b       .Lxor_r1_4
+op_aa_xor_d:
+    ldrh    r1, [r6, #CPU_DE]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lxor_r1_4
+op_ab_xor_e:
+    ldrh    r1, [r6, #CPU_DE]
+    uxtb    r1, r1
+    b       .Lxor_r1_4
+op_ac_xor_h:
+    ldrh    r1, [r6, #CPU_HL]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lxor_r1_4
+op_ad_xor_l:
+    ldrh    r1, [r6, #CPU_HL]
+    uxtb    r1, r1
+    b       .Lxor_r1_4
+op_ae_xor_hl:
+    ldrh    r5, [r6, #CPU_HL]
+    uxth    r0, r5
+    bl      RdZ80
+    uxtb    r1, r0
+    b       .Lxor_r1_7
+op_af_xor_a:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r1, r5, #8
+    uxtb    r1, r1
+    b       .Lxor_r1_4
+
+.Lxor_common:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8
+    uxtb    r0, r0
+    uxtb    r1, r1
+    eor     r0, r0, r1
+    push    {lr}
+    bl      .Llogic_szp
+    pop     {lr}
+    lsls    r5, r0, #8
+    orr     r5, r5, r12
+    strh    r5, [r6, #CPU_AF]
+    bx      lr
+
+.Lxor_r1_4:
+    bl      .Lxor_common
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+.Lxor_r1_7:
+    bl      .Lxor_common
+    add     r7, r7, #1
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0xB8-0xBF: CP r/(HL) (like SUB but does not store A) */
+op_b8_cp_b:
+    ldrh    r1, [r6, #CPU_BC]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lcp_r1_4
+op_b9_cp_c:
+    ldrh    r1, [r6, #CPU_BC]
+    uxtb    r1, r1
+    b       .Lcp_r1_4
+op_ba_cp_d:
+    ldrh    r1, [r6, #CPU_DE]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lcp_r1_4
+op_bb_cp_e:
+    ldrh    r1, [r6, #CPU_DE]
+    uxtb    r1, r1
+    b       .Lcp_r1_4
+op_bc_cp_h:
+    ldrh    r1, [r6, #CPU_HL]
+    lsrs    r1, r1, #8
+    uxtb    r1, r1
+    b       .Lcp_r1_4
+op_bd_cp_l:
+    ldrh    r1, [r6, #CPU_HL]
+    uxtb    r1, r1
+    b       .Lcp_r1_4
+op_be_cp_hl:
+    ldrh    r5, [r6, #CPU_HL]
+    uxth    r0, r5
+    bl      RdZ80
+    uxtb    r1, r0
+    b       .Lcp_r1_7
+op_bf_cp_a:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r1, r5, #8
+    uxtb    r1, r1
+    b       .Lcp_r1_4
+
+.Lcp_common:
+    /* r1 = operand */
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8         /* r0 = A */
+    uxtb    r0, r0
+    uxtb    r1, r1
+    cmp     r0, r1
+    ite     lo
+    movlo   r12, #1            /* borrow -> C */
+    movhs   r12, #0
+    subs    r2, r0, r1         /* r2 = result (A-op) */
+    uxtb    r2, r2
+    orr     r12, r12, #F_N
+    cmp     r2, #0
+    it      eq
+    orreq   r12, r12, #F_Z
+    tst     r2, #0x80
+    it      ne
+    orrne   r12, r12, #F_S
+    /* H */
+    eor     r3, r0, r1
+    eor     r3, r3, r2
+    tst     r3, #0x10
+    it      ne
+    orrne   r12, r12, #F_H
+    /* V: (A^op) & (A^res) & 0x80 */
+    eor     r3, r0, r1
+    eor     r1, r0, r2
+    and     r3, r3, r1
+    tst     r3, #0x80
+    it      ne
+    orrne   r12, r12, #F_V
+    /* store only flags, keep A */
+    lsls    r5, r0, #8
+    orr     r5, r5, r12
+    strh    r5, [r6, #CPU_AF]
+    bx      lr
+
+.Lcp_r1_4:
+    bl      .Lcp_common
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+.Lcp_r1_7:
+    bl      .Lcp_common
+    add     r7, r7, #1
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+/* Immediate logic ops (7 cycles) */
+op_e6_and_n:
+    add     r0, r7, #1
+    uxth    r0, r0
+    bl      RdZ80
+    uxtb    r1, r0
+    bl      .Land_common
+    add     r7, r7, #2
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+op_f6_or_n:
+    add     r0, r7, #1
+    uxth    r0, r0
+    bl      RdZ80
+    uxtb    r1, r0
+    bl      .Lor_common
+    add     r7, r7, #2
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+op_ee_xor_n:
+    add     r0, r7, #1
+    uxth    r0, r0
+    bl      RdZ80
+    uxtb    r1, r0
+    bl      .Lxor_common
+    add     r7, r7, #2
+    subs    r4, r4, #7
+    bgt     .Lloop
+    b       .Lreturn
+
+op_fe_cp_n:
+    add     r0, r7, #1
+    uxth    r0, r0
+    bl      RdZ80
+    uxtb    r1, r0
+    bl      .Lcp_common
+    add     r7, r7, #2
     subs    r4, r4, #7
     bgt     .Lloop
     b       .Lreturn
