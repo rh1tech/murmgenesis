@@ -44,7 +44,9 @@
 /* Flag bits */
 .equ F_S, 0x80
 .equ F_Z, 0x40
+.equ F_Y, 0x20
 .equ F_H, 0x10
+.equ F_X, 0x08
 .equ F_V, 0x04
 .equ F_N, 0x02
 .equ F_C, 0x01
@@ -408,6 +410,22 @@ z80_arm_exec:
     beq     op_9e_sbc_a_hl
     cmp     r0, #0x9F
     beq     op_9f_sbc_a_a
+    cmp     r0, #0x07
+    beq     op_07_rlca
+    cmp     r0, #0x0F
+    beq     op_0f_rrca
+    cmp     r0, #0x17
+    beq     op_17_rla
+    cmp     r0, #0x1F
+    beq     op_1f_rra
+    cmp     r0, #0x27
+    beq     op_27_daa
+    cmp     r0, #0x2F
+    beq     op_2f_cpl
+    cmp     r0, #0x37
+    beq     op_37_scf
+    cmp     r0, #0x3F
+    beq     op_3f_ccf
     cmp     r0, #0xA0
     beq     op_a0_and_b
     cmp     r0, #0xA1
@@ -2719,6 +2737,9 @@ op_9f_sbc_a_a:
        NOTE: must preserve r0 (result) for caller. */
     uxtb    r2, r0
     movs    r12, #0
+    /* undocumented flags X/Y from result */
+    and     r1, r2, #0x28
+    orr     r12, r12, r1
     cmp     r2, #0
     it      eq
     orreq   r12, r12, #F_Z
@@ -2733,6 +2754,211 @@ op_9f_sbc_a_a:
     orr     r12, r12, r3
     mov     r0, r2
     bx      lr
+
+/* 0x07: RLCA (4 cycles) */
+op_07_rlca:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8         /* A */
+    uxtb    r0, r0
+    and     r1, r5, #0xFF      /* F */
+    lsrs    r2, r0, #7         /* new C (0/1) */
+    lsls    r0, r0, #1
+    uxtb    r0, r0
+    orr     r0, r0, r2
+    bic     r1, r1, #(F_C|F_N|F_H)
+    orr     r1, r1, r2
+    lsls    r5, r0, #8
+    orr     r5, r5, r1
+    strh    r5, [r6, #CPU_AF]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0x0F: RRCA (4 cycles) */
+op_0f_rrca:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8         /* A */
+    uxtb    r0, r0
+    and     r1, r5, #0xFF      /* F */
+    and     r2, r0, #1         /* new C */
+    lsrs    r0, r0, #1
+    lsls    r3, r2, #7
+    orr     r0, r0, r3
+    uxtb    r0, r0
+    bic     r1, r1, #(F_C|F_N|F_H)
+    orr     r1, r1, r2
+    lsls    r5, r0, #8
+    orr     r5, r5, r1
+    strh    r5, [r6, #CPU_AF]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0x17: RLA (4 cycles) */
+op_17_rla:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8         /* A */
+    uxtb    r0, r0
+    and     r1, r5, #0xFF      /* F */
+    lsrs    r2, r0, #7         /* new C */
+    and     r3, r1, #F_C       /* old C */
+    lsls    r0, r0, #1
+    uxtb    r0, r0
+    orr     r0, r0, r3
+    bic     r1, r1, #(F_C|F_N|F_H)
+    orr     r1, r1, r2
+    lsls    r5, r0, #8
+    orr     r5, r5, r1
+    strh    r5, [r6, #CPU_AF]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0x1F: RRA (4 cycles) */
+op_1f_rra:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8         /* A */
+    uxtb    r0, r0
+    and     r1, r5, #0xFF      /* F */
+    and     r2, r0, #1         /* new C */
+    and     r3, r1, #F_C       /* old C */
+    lsrs    r0, r0, #1
+    lsls    r3, r3, #7
+    orr     r0, r0, r3
+    uxtb    r0, r0
+    bic     r1, r1, #(F_C|F_N|F_H)
+    orr     r1, r1, r2
+    lsls    r5, r0, #8
+    orr     r5, r5, r1
+    strh    r5, [r6, #CPU_AF]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0x2F: CPL (4 cycles) */
+op_2f_cpl:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8         /* A */
+    mvn     r0, r0
+    uxtb    r0, r0
+    and     r1, r5, #0xFF      /* F */
+    orr     r1, r1, #(F_N|F_H)
+    lsls    r5, r0, #8
+    orr     r5, r5, r1
+    strh    r5, [r6, #CPU_AF]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0x37: SCF (4 cycles) */
+op_37_scf:
+    ldrh    r5, [r6, #CPU_AF]
+    and     r1, r5, #0xFF      /* F */
+    orr     r1, r1, #F_C
+    bic     r1, r1, #(F_N|F_H)
+    bic     r5, r5, #0xFF
+    orr     r5, r5, r1
+    strh    r5, [r6, #CPU_AF]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0x3F: CCF (4 cycles) */
+op_3f_ccf:
+    ldrh    r5, [r6, #CPU_AF]
+    and     r1, r5, #0xFF      /* F */
+    eor     r1, r1, #F_C
+    bic     r1, r1, #(F_N|F_H)
+    tst     r1, #F_C
+    it      eq
+    orreq   r1, r1, #F_H
+    bic     r5, r5, #0xFF
+    orr     r5, r5, r1
+    strh    r5, [r6, #CPU_AF]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
+
+/* 0x27: DAA (4 cycles)
+   Matches the existing DAATable semantics, including undocumented X/Y flags. */
+op_27_daa:
+    ldrh    r5, [r6, #CPU_AF]
+    lsrs    r0, r5, #8         /* A (original) */
+    uxtb    r0, r0
+    and     r1, r5, #0xFF      /* F (original) */
+
+    /* c_out = (F_C) || (A > 0x99) */
+    and     r3, r1, #F_C       /* carry_in (0/1) */
+    movs    r2, #0
+    cmp     r0, #0x99
+    it      hi
+    movhi   r2, #1
+    orr     r2, r2, r3         /* r2 = c_out (0/1) */
+
+    /* adj = 0; if (H || (A&0x0F) > 9) adj |= 6; if (c_out) adj |= 0x60 */
+    movs    r3, #0
+    tst     r1, #F_H
+    bne     1f
+    and     r12, r0, #0x0F
+    cmp     r12, #9
+    ble     2f
+1:
+    orr     r3, r3, #0x06
+2:
+    cmp     r2, #0
+    it      ne
+    orrne   r3, r3, #0x60
+
+    /* res = (N ? A-adj : A+adj) */
+    mov     r12, r0            /* keep original A in r0 */
+    tst     r1, #F_N
+    ite     eq
+    addeq   r12, r12, r3
+    subne   r12, r12, r3
+    uxtb    r12, r12
+
+    /* h_out = ((A ^ res) & 0x10) != 0 */
+    eor     r5, r0, r12
+    and     r5, r5, #0x10
+
+    /* flags_out = (res & 0x28) | SZPV | N | H | C */
+    and     r3, r12, #0x28     /* X/Y */
+    cmp     r12, #0
+    it      eq
+    orreq   r3, r3, #F_Z
+    tst     r12, #0x80
+    it      ne
+    orrne   r3, r3, #F_S
+    push    {lr}
+    mov     r0, r12
+    bl      .Lparity_flag
+    pop     {lr}
+    orr     r3, r3, r0         /* PV */
+    tst     r1, #F_N
+    it      ne
+    orrne   r3, r3, #F_N
+    cmp     r5, #0
+    it      ne
+    orrne   r3, r3, #F_H
+    cmp     r2, #0
+    it      ne
+    orrne   r3, r3, #F_C
+
+    /* store AF */
+    lsls    r5, r12, #8
+    orr     r5, r5, r3
+    strh    r5, [r6, #CPU_AF]
+    add     r7, r7, #1
+    subs    r4, r4, #4
+    bgt     .Lloop
+    b       .Lreturn
 
 /* 0xA0-0xA7: AND r/(HL) */
 op_a0_and_b:
