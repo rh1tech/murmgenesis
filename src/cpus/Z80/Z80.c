@@ -64,8 +64,9 @@ INLINE byte OpZ80(word A) { return(RAM[A>>13][A&0x1FFF]); }
 
 #ifdef GENESIS
 #define FAST_RDOP
-extern byte *Z80_RAM[];
-INLINE byte OpZ80(word A) { return(Z80_RAM[A>>13][A&0x1FFF]); }
+/* In this project Z80 RAM is a flat 8KB buffer mirrored in 0x0000-0x3FFF. */
+extern byte *Z80_RAM;
+INLINE byte OpZ80(word A) { return Z80_RAM[A & 0x1FFF]; }
 #endif
 
 /** FAST_RDOP ************************************************/

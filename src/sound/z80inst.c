@@ -96,7 +96,7 @@ void z80_pulse_reset() {
 void z80_run(int target) {
 
   // we are in advance,nothind to do
-current_timeslice = 0;
+  current_timeslice = 0;
   if (zclk >= target) {
  // z80_log("z80_skip time","%1d%1d%1d||zclk=%d,tgt=%d",reset_once,bus_ack,reset, zclk, target);
     return;
@@ -104,8 +104,22 @@ current_timeslice = 0;
 
   current_timeslice = target - zclk;
 
+  /* If we have less than one Z80 cycle worth of time, do nothing and
+     accumulate until we can run at least 1 cycle. This avoids calling the
+     core with RunCycles=0 on very small sync deltas. */
+  if (current_timeslice < Z80_FREQ_DIVISOR) {
+    return;
+  }
+
   int rem = 0;
   if ((reset_once == 1) && (bus_ack == 0) && (reset == 0)) {
+
+    /* If Z80 is HALTed and no interrupt is pending, it effectively just burns
+       cycles until an interrupt arrives. Fast-forward time without executing. */
+    if ((cpu.IFF & IFF_HALT) && (cpu.IRequest == INT_NONE)) {
+      zclk = target;
+      return;
+    }
 
    // z80_log("z80_run", "%1d%1d%1d||zclk=%d,tgt=%d",reset_once, bus_ack, reset, zclk, target);
 #if USE_Z80_ARM_ASM

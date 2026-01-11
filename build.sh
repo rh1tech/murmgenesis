@@ -12,5 +12,11 @@ else
     echo "Building with USB HID Host support (UART for debug output)"
 fi
 
+# Optional tuning: run Z80 every N scanlines (more aggressive = larger N)
+if [ -n "$Z80_SLICE_LINES" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DZ80_SLICE_LINES=$Z80_SLICE_LINES"
+    echo "Z80_SLICE_LINES=$Z80_SLICE_LINES"
+fi
+
 cmake $CMAKE_OPTS ..
 make -j4

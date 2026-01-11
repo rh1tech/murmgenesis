@@ -534,8 +534,13 @@ static void __time_critical_func(emulation_loop)(void) {
         // ==================================================================
         // PHASE 1: Run all emulation first (M68K + Z80 + sound chips)
         // This ensures sound chip state is updated at consistent timing
-        // Z80 must run every scanline for proper DAC/PCM timing
+        // Z80 can be run in larger timeslices to reduce interpreter overhead.
+        // This preserves overall playback speed (same total cycles), but may
+        // reduce sub-scanline timing fidelity for some PCM-heavy drivers.
         // ==================================================================
+        #ifndef Z80_SLICE_LINES
+        #define Z80_SLICE_LINES 16
+        #endif
         while (scan_line < lines_per_frame) {
             // Run M68K for one line
             PROFILE_START();
@@ -546,10 +551,12 @@ static void __time_critical_func(emulation_loop)(void) {
 #endif
             PROFILE_END(m68k_time);
             
-            // Run Z80 every scanline - required for correct PCM audio timing
-            PROFILE_START();
-            z80_run(system_clock + VDP_CYCLES_PER_LINE);
-            PROFILE_END(z80_time);
+            // Run Z80 in chunks of scanlines to reduce call overhead.
+            if (((scan_line % Z80_SLICE_LINES) == (Z80_SLICE_LINES - 1)) || (scan_line == (lines_per_frame - 1))) {
+                PROFILE_START();
+                z80_run(system_clock + VDP_CYCLES_PER_LINE);
+                PROFILE_END(z80_time);
+            }
             
             // Note: Sound chips are called automatically during YM2612Write/SN76489_Write
             // with GWENESIS_AUDIO_ACCURATE=1 for cycle-accurate timing

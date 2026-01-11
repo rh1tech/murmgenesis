@@ -12,6 +12,11 @@ set(CPU_SPEED "504" CACHE STRING "CPU clock in MHz: 252, 378, 504")
 # PSRAM speed configuration (84, 100, 133, 166 MHz target)
 set(PSRAM_SPEED "166" CACHE STRING "PSRAM max frequency in MHz: 84, 100, 133, 166")
 
+# Z80 scheduling: run the Z80 core less often to reduce interpreter overhead.
+# Higher values generally improve performance but can reduce timing fidelity for
+# some PCM-heavy drivers.
+set(Z80_SLICE_LINES "16" CACHE STRING "Run Z80 every N scanlines (default 16)")
+
 # CPU voltage selection based on speed
 if(CPU_SPEED GREATER_EQUAL 504)
     set(CPU_VOLTAGE "VREG_VOLTAGE_1_65")
@@ -139,6 +144,7 @@ target_compile_definitions(murmgenesis PRIVATE
     # I2S Audio configuration - use PIO0 to avoid conflict with HDMI on PIO1
     PICO_AUDIO_I2S_PIO=0
     PICO_AUDIO_I2S_DMA_IRQ=1
+    Z80_SLICE_LINES=${Z80_SLICE_LINES}
 )
 
 # Set peripheral pins based on board variant
