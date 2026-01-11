@@ -101,6 +101,9 @@ set(GWENESIS_SOURCES
     # VDP
     src/vdp/gwenesis_vdp_gfx.c
     src/vdp/gwenesis_vdp_mem.c
+    src/vdp/gwenesis_vdp_gfx_opt.S
+    src/vdp/gwenesis_vdp_sprite_opt.S
+    src/vdp/gwenesis_vdp_line_opt.S
     # Savestate
     src/savestate/gwenesis_savestate.c
 )
@@ -141,7 +144,7 @@ target_compile_definitions(murmgenesis PRIVATE
     ROM_SWAP=0
     BUS_DISABLE_LOGGING=1
     VDP_GFX_DISABLE_LOGGING=1
-    ENABLE_LOGGING=0
+    ENABLE_LOGGING=1
     # I2S Audio configuration - use PIO0 to avoid conflict with HDMI on PIO1
     PICO_AUDIO_I2S_PIO=0
     PICO_AUDIO_I2S_DMA_IRQ=1

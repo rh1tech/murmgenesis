@@ -31,6 +31,24 @@ __license__ = "GPLv3"
 
 #pragma GCC optimize("Ofast")
 
+/* Assembly-optimized pattern drawing functions */
+extern void draw_pattern_nofliph_planeB_asm(uint8_t* scr, uint32_t p, uint8_t attrs, uint8_t back);
+extern void draw_pattern_fliph_planeB_asm(uint8_t* scr, uint32_t p, uint8_t attrs, uint8_t back);
+extern void draw_pattern_nofliph_planeA_asm(uint8_t* scr, uint32_t p, uint8_t attrs);
+extern void draw_pattern_fliph_planeA_asm(uint8_t* scr, uint32_t p, uint8_t attrs);
+extern void draw_pattern_nofliph_sprite_asm(uint8_t* scr, uint32_t p, uint8_t attrs);
+extern void draw_pattern_fliph_sprite_asm(uint8_t* scr, uint32_t p, uint8_t attrs);
+extern void draw_pattern_nofliph_sprite_over_asm(uint8_t* scr, uint32_t p, uint8_t attrs);
+extern void draw_pattern_fliph_sprite_over_asm(uint8_t* scr, uint32_t p, uint8_t attrs);
+
+/* Assembly-optimized line drawing (entire tile row) */
+extern void draw_line_b_simple_asm(uint8_t* scr, uint8_t* vram_nt, uint32_t col, uint32_t paty,
+                                   uint32_t ntw_mask, uint32_t background, uint32_t tile_count);
+
+/* Use assembly implementations */
+#define USE_ASM_VDP 1
+#define USE_ASM_LINE 1
+
 extern unsigned char __aligned(4) VRAM[];
 
 extern unsigned short CRAM[]; // CRAM - Palettes
@@ -358,128 +376,112 @@ draw_pattern_fliph_planeAoverB(uint8_t* scr, uint32_t p, uint8_t attrs) {
  ******************************************************************************/
 static inline __attribute__((always_inline))
 void draw_pattern_sprite(uint8_t* scr, uint16_t name, int paty) {
-    // uint16_t pat_addr = name << 5; //name * 32;
-    // uint8_t pat_palette = BITS(name, 13, 2);
-    // //unsigned int is_pat_pri = name & 0x8000;
-    // uint8_t *pattern = VRAM + pat_addr;
-    // uint8_t attrs = (pat_palette << 4) | ((name & 0x8000) ? PIXATTR_SPRITE_HIPRI : PIXATTR_SPRITE);
     const uint8_t attrs = ((name & 0x6000) >> 9) + ((name & 0x8000) >> 8) + PIXATTR_SPRITE;
 
     unsigned int pattern;
 
     // Vertical flip ?
-    // if (name & 0x1000)
-    //   pattern += (7 - paty) * 4;
-    // else
-    //   pattern += paty * 4;
-
-    // unsigned int  pattern;
-
-    // Vertical flip ?
     if (name & 0x1000)
-        pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul((7 - paty), 4)); //) pat_addr;
+        pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul((7 - paty), 4));
     else
         pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul(paty, 4));
 
+#if USE_ASM_VDP
+    // Use assembly for pattern drawing
+    if (name & 0x0800)
+        draw_pattern_fliph_sprite_asm(scr, pattern, attrs);
+    else
+        draw_pattern_nofliph_sprite_asm(scr, pattern, attrs);
+#else
     // Horizontal flip ?
     if (name & 0x0800)
         draw_pattern_fliph_sprite(scr, pattern, attrs);
     else
         draw_pattern_nofliph_sprite(scr, pattern, attrs);
+#endif
 }
 
 static inline __attribute__((always_inline))
 void draw_pattern_sprite_over_planes(uint8_t* scr, uint16_t name, int paty) {
-    // uint16_t pat_addr = name << 5 ; //* 32;
-    // int pat_palette = BITS(name, 13, 2);
-    // int is_pat_pri = name & 0x8000;
-    // uint8_t *pattern = VRAM + pat_addr;
-    // uint8_t attrs = (pat_palette << 4) | (is_pat_pri ? PIXATTR_SPRITE_HIPRI : PIXATTR_SPRITE);
-
-    // Vertical flip ?
-    // if (name & 0x1000)
-    //   pattern += (7 - paty) * 4;
-    // else
-    //   pattern += paty * 4;
-
-    //uint8_t attrs = ( (name & 0x6000 ) >> 9 ) | ((name & 0x8000) ? PIXATTR_SPRITE_HIPRI : PIXATTR_SPRITE);
     const uint8_t attrs = ((name & 0x6000) >> 9) + ((name & 0x8000) >> 8) + PIXATTR_SPRITE;
-    //uint8_t attrs = ( (name >>9) & 0x70 ) | PIXATTR_SPRITE;
 
     unsigned int pattern;
 
     // Vertical flip ?
     if (name & 0x1000)
-        pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul((7 - paty), 4)); //) pat_addr;
+        pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul((7 - paty), 4));
     else
         pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul(paty, 4));
 
+#if USE_ASM_VDP
+    // Use assembly for pattern drawing
+    if (name & 0x0800)
+        draw_pattern_fliph_sprite_over_asm(scr, pattern, attrs);
+    else
+        draw_pattern_nofliph_sprite_over_asm(scr, pattern, attrs);
+#else
     // Horizontal flip ?
     if (name & 0x0800)
         draw_pattern_fliph_sprite_over_planes(scr, pattern, attrs);
     else
         draw_pattern_nofliph_sprite_over_planes(scr, pattern, attrs);
+#endif
 }
 
 static inline __attribute__((always_inline))
 void draw_pattern_planeB(uint8_t* scr, uint16_t name, int paty) {
-    // uint16_t pat_addr = name  << 5; // * 32;
-    // uint8_t pat_palette = BITS(name, 13, 2);
-    // unsigned int is_pat_pri = name & 0x8000;
-    //uint8_t *pattern = VRAM + pat_addr;
-
     const uint8_t attrs = ((name & 0x6000) >> 9) + ((name & 0x8000) >> 8);
 
     unsigned int pattern;
 
     // Vertical flip ?
     if (name & 0x1000)
-        pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul((7 - paty), 4)); //) pat_addr;
+        pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul((7 - paty), 4));
     else
         pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul(paty, 4));
 
-    //  if ((*(unsigned int *)pattern) == 0 ) return;
-    // uint8_t *pattern = VRAM + ((name << 5) & 0xFFFF); //) pat_addr;
-    //uint32_t pattern = VRAM[(name & 0x07FF) << 5]; //) pat_addr;
-
+#if USE_ASM_VDP
+    // Use assembly for pattern drawing
+    if (name & 0x0800)
+        draw_pattern_fliph_planeB_asm(scr, pattern, attrs, gwenesis_vdp_regs[7]);
+    else
+        draw_pattern_nofliph_planeB_asm(scr, pattern, attrs, gwenesis_vdp_regs[7]);
+#else
     // Horizontal flip ?
     if (name & 0x0800)
         draw_pattern_fliph_planeB(scr, pattern, attrs);
 
     else
         draw_pattern_nofliph_planeB(scr, pattern, attrs);
+#endif
 }
 
 static inline __attribute__((always_inline))
 void draw_pattern_planeA(uint8_t* scr, uint16_t name, int paty) {
-    // uint16_t pat_addr = name << 5; //* 32;
-    // uint8_t pat_palette = BITS(name, 13, 2);
-    // unsigned int is_pat_pri = name & 0x8000;
-    // uint8_t *pattern = VRAM + pat_addr;
-
     const uint8_t attrs = ((name & 0x6000) >> 9) + ((name & 0x8000) >> 8);
-
 
     unsigned int pattern;
 
     // Vertical flip ?
-    // if (name & 0x1000)
-    //   pattern += (7 - paty) * 4;
-    // else
-    //   pattern += paty * 4;
-
-    // Vertical flip ?
     if (name & 0x1000)
-        pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul((7 - paty), 4)); //) pat_addr;
+        pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul((7 - paty), 4));
     else
         pattern = *(unsigned int *)(VRAM + ((name & 0x07FF) << 5) + __fast_mul(paty, 4));
 
+#if USE_ASM_VDP
+    // Use assembly for pattern drawing
+    if (name & 0x0800)
+        draw_pattern_fliph_planeA_asm(scr, pattern, attrs);
+    else
+        draw_pattern_nofliph_planeA_asm(scr, pattern, attrs);
+#else
     // Horizontal flip ?
     if (name & 0x0800)
         draw_pattern_fliph_planeAoverB(scr, pattern, attrs);
 
     else
         draw_pattern_nofliph_planeAoverB(scr, pattern, attrs);
+#endif
 }
 
 static uint16_t ntwidth_x2;
@@ -528,6 +530,30 @@ void draw_line_b(int line) {
     scrollx = -scrollx;
     uint8_t col = (scrollx >> 3) & ntw_mask;
     const uint8_t patx = scrollx & 7;
+
+#if USE_ASM_LINE
+    /* Use assembly for non-column-scrolling case */
+    if (!column_scrolling) {
+        uint16_t scrolly = *vsram + line;
+        uint8_t row = (scrolly >> 3) & nth_mask;
+        uint8_t paty = scrolly & 7;
+        
+        /* Calculate nametable row base */
+        unsigned int nt_base = ntaddr + row * ntwidth_x2;
+        
+        /* Call assembly line renderer */
+        draw_line_b_simple_asm(
+            scr - patx,                     /* screen pointer adjusted for fine scroll */
+            VRAM + nt_base,                 /* VRAM + nametable row offset */
+            col,                            /* initial column */
+            paty,                           /* pattern Y offset */
+            ntw_mask,                       /* column wrap mask */
+            gwenesis_vdp_regs[7],           /* background color */
+            (screen_width + patx + 7) / 8   /* tile count (round up) */
+        );
+        return;
+    }
+#endif
 
     unsigned int numcell = 0;
     scr -= patx;
