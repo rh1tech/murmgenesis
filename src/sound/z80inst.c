@@ -28,7 +28,7 @@ __license__ = "GPLv3"
 #include "gwenesis_savestate.h"
 
 /* Set to 1 to use ARM assembly Z80 core, 0 for C core */
-#define USE_Z80_ARM_ASM 0
+#define USE_Z80_ARM_ASM 1
 
 #if USE_Z80_ARM_ASM
 #include "z80_arm.h"

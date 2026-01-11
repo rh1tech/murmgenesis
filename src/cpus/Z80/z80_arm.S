@@ -12,6 +12,8 @@
 
 .section .time_critical.z80_arm, "ax"
 
+#include "z80_arm_config.h"
+
 .extern cpu
 .extern RdZ80
 .extern ExecZ80
@@ -55,6 +57,16 @@
 .type z80_arm_exec, %function
 .thumb_func
 z80_arm_exec:
+#if !Z80_ARM_ENABLE
+    /* Wrapper mode: always use C interpreter. */
+    push    {r4, lr}
+    movw    r4, #:lower16:cpu
+    movt    r4, #:upper16:cpu
+    mov     r1, r0
+    mov     r0, r4
+    bl      ExecZ80
+    pop     {r4, pc}
+#else
     push    {r4-r7, lr}
 
     /* r0 = cycles */
@@ -122,16 +134,20 @@ z80_arm_exec:
     beq     op_3d_dec_a
     cmp     r0, #0x3E
     beq     op_3e_ld_a_n
+#if Z80_ARM_ENABLE_MEM_IMM
     cmp     r0, #0x32
     beq     op_32_ld_nn_a
     cmp     r0, #0x3A
     beq     op_3a_ld_a_nn
     cmp     r0, #0x36
     beq     op_36_ld_hl_n
+#endif
     cmp     r0, #0x22
     beq     op_22_ld_nn_hl
+#if Z80_ARM_ENABLE_EX_AF
     cmp     r0, #0x08
     beq     op_08_ex_af_af1
+#endif
     cmp     r0, #0x13
     beq     op_13_inc_de
     cmp     r0, #0x1B
@@ -300,6 +316,7 @@ z80_arm_exec:
     beq     op_da_jp_c
     cmp     r0, #0xE9
     beq     op_e9_jp_hl
+#if Z80_ARM_ENABLE_EX_MISC
     cmp     r0, #0xEB
     beq     op_eb_ex_de_hl
     cmp     r0, #0xD9
@@ -308,6 +325,7 @@ z80_arm_exec:
     beq     op_e3_ex_sp_hl
     cmp     r0, #0xF9
     beq     op_f9_ld_sp_hl
+#endif
     cmp     r0, #0x76
     beq     .Lfallback        /* HALT: use C core for now */
     cmp     r0, #0xC3
@@ -390,6 +408,17 @@ z80_arm_exec:
     beq     op_94_sub_h
     cmp     r0, #0x95
     beq     op_95_sub_l
+
+#if Z80_ARM_ENABLE_IMM_ALU
+    cmp     r0, #0xC6
+    beq     op_c6_add_a_n
+    cmp     r0, #0xCE
+    beq     op_ce_adc_a_n
+    cmp     r0, #0xD6
+    beq     op_d6_sub_n
+    cmp     r0, #0xDE
+    beq     op_de_sbc_a_n
+#endif
     cmp     r0, #0x96
     beq     op_96_sub_hl
     cmp     r0, #0x97
@@ -4132,5 +4161,7 @@ op_7e_ld_a_hl:
     bl      ExecZ80
     mov     r4, r0
     pop     {r4-r7, pc}
+
+#endif /* Z80_ARM_ENABLE */
 
 .size z80_arm_exec, .-z80_arm_exec
