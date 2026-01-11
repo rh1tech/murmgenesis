@@ -7,10 +7,8 @@
 | D-pad | D-pad | Direct mapping |
 | A | A | |
 | B | B | |
-| A + B | A | Jump combo for easier platforming |
+| A + B | C | Button combo required |
 | Start | Start | |
-| Select + A | C | Button combo required |
-| Select + B | C | Button combo required |
 | Select + Start | Reset | Return to ROM selector |
 
 ## SNES Controller (6-button mode)

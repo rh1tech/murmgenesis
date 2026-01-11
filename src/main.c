@@ -921,10 +921,8 @@ extern unsigned char button_state[];
 // - D-pad → Genesis D-pad
 // - NES B → Genesis B
 // - NES A → Genesis A  
-// - NES A + B → Genesis A (jump - combo)
+// - NES A + B → Genesis C
 // - NES Start → Genesis Start
-// - NES Select+B → Genesis C
-// - NES Select+A → Genesis C
 //
 // SNES Controller mapping (6-button):
 // - D-pad → Genesis D-pad
@@ -1008,29 +1006,15 @@ void gwenesis_io_get_buttons(void) {
         if (nespad_state & DPAD_RT) button_state[0] &= ~(1 << 4); // SNES R → Genesis B (shoot alt)
     } else {
         // NES controller - button combos
-        bool select_pressed = (nespad_state & DPAD_SELECT);
         bool a_pressed = (nespad_state & DPAD_A);
         bool b_pressed = (nespad_state & DPAD_B);
         
-        // A+B combo = Jump (Genesis A)
+        // A+B combo = Genesis C
         if (a_pressed && b_pressed) {
-            button_state[0] &= ~(1 << 6); // A+B = Genesis A (jump)
+            button_state[0] &= ~(1 << 5); // A+B = Genesis C
         } else {
-            if (b_pressed) {
-                if (select_pressed) {
-                    button_state[0] &= ~(1 << 5); // SELECT+B = Genesis C
-                } else {
-                    button_state[0] &= ~(1 << 4); // B = Genesis B
-                }
-            }
-            
-            if (a_pressed) {
-                if (select_pressed) {
-                    button_state[0] &= ~(1 << 5); // SELECT+A = Genesis C
-                } else {
-                    button_state[0] &= ~(1 << 6); // A = Genesis A
-                }
-            }
+            if (b_pressed) button_state[0] &= ~(1 << 4); // B = Genesis B
+            if (a_pressed) button_state[0] &= ~(1 << 6); // A = Genesis A
         }
     }
     
@@ -1055,29 +1039,15 @@ void gwenesis_io_get_buttons(void) {
         if (nespad_state2 & DPAD_RT) button_state[1] &= ~(1 << 4); // SNES R → Genesis B (shoot alt)
     } else {
         // NES controller - button combos
-        bool select_pressed2 = (nespad_state2 & DPAD_SELECT);
         bool a_pressed2 = (nespad_state2 & DPAD_A);
         bool b_pressed2 = (nespad_state2 & DPAD_B);
         
-        // A+B combo = Jump (Genesis A)
+        // A+B combo = Genesis C
         if (a_pressed2 && b_pressed2) {
-            button_state[1] &= ~(1 << 6); // A+B = Genesis A (jump)
+            button_state[1] &= ~(1 << 5); // A+B = Genesis C
         } else {
-            if (b_pressed2) {
-                if (select_pressed2) {
-                    button_state[1] &= ~(1 << 5); // SELECT+B = Genesis C
-                } else {
-                    button_state[1] &= ~(1 << 4); // B = Genesis B
-                }
-            }
-            
-            if (a_pressed2) {
-                if (select_pressed2) {
-                    button_state[1] &= ~(1 << 5); // SELECT+A = Genesis C
-                } else {
-                    button_state[1] &= ~(1 << 6); // A = Genesis A
-                }
-            }
+            if (b_pressed2) button_state[1] &= ~(1 << 4); // B = Genesis B
+            if (a_pressed2) button_state[1] &= ~(1 << 6); // A = Genesis A
         }
     }
     
