@@ -70,6 +70,17 @@
 #define FRAMESKIP_MAX_CONSECUTIVE 4
 #define FRAMESKIP_MAX_BACKLOG_FRAMES 8
 #define FRAMESKIP_RENDER_COST_DEFAULT_US 4000u
+// Strong blink protection: never skip the opposite-parity (even/odd) frame after
+// rendering. This keeps 60Hz alternating effects (invincibility blinking) visible
+// even when we fall back to ~30Hz rendering.
+#define FRAMESKIP_STRONG_BLINK_PROTECTION 1
+
+// Aggressiveness tuning (higher = skip earlier / recover faster)
+// - Threshold divisor: lower means more aggressive skipping.
+// - Paydown factor: >1.0 makes each skipped render reduce backlog more.
+#define FRAMESKIP_SKIP_THRESHOLD_DIVISOR 4u   // was effectively 2u
+#define FRAMESKIP_SKIP_PAYDOWN_NUM 3u
+#define FRAMESKIP_SKIP_PAYDOWN_DEN 2u
 
 #if USE_M68K_FAST_LOOP
 // Assembly-optimized M68K execution loop
@@ -460,7 +471,7 @@ static void __time_critical_func(emulation_loop)(void) {
 #if ENABLE_ADAPTIVE_FRAMESKIP
         // If we have backlog, prefer skipping render (saves render_cost_ema_us).
         uint32_t estimated_render_cost_us = render_cost_ema_us ? render_cost_ema_us : FRAMESKIP_RENDER_COST_DEFAULT_US;
-        if (backlog_us >= (estimated_render_cost_us / 2u) && estimated_render_cost_us) {
+    if (backlog_us >= (estimated_render_cost_us / FRAMESKIP_SKIP_THRESHOLD_DIVISOR) && estimated_render_cost_us) {
             render_this_frame = false;
         }
         // Safety: always render at least once every (FRAMESKIP_MAX_CONSECUTIVE + 1) frames.
@@ -468,14 +479,21 @@ static void __time_critical_func(emulation_loop)(void) {
             render_this_frame = true;
         }
 
-        // Parity fairness: if we're about to skip an opposite-parity frame while repeatedly
-        // rendering the same parity (e.g. render every 2 frames), force a render to ensure
-        // 60Hz alternating effects (like invincibility blinking) remain visible.
+        // Parity fairness / blink protection:
+        // Many games blink by toggling sprite visibility every frame. If we only ever render
+        // one parity (even/odd), we can miss the sprite entirely. In strong mode, never skip
+        // the opposite parity frame after a render (caps to ~30Hz but keeps blinking visible).
         if (!render_this_frame && last_rendered_parity >= 0) {
             int current_parity = (int)(frame_num & 1u);
+#if FRAMESKIP_STRONG_BLINK_PROTECTION
+            if (current_parity != last_rendered_parity) {
+                render_this_frame = true;
+            }
+#else
             if (current_parity != last_rendered_parity && same_parity_render_count >= 1u) {
                 render_this_frame = true;
             }
+#endif
         }
 #endif
         if (force_render) {
@@ -487,7 +505,9 @@ static void __time_critical_func(emulation_loop)(void) {
         // This prevents long streaks of skips and makes the controller more stable.
         if (!render_this_frame && backlog_us) {
             uint32_t dec = render_cost_ema_us ? render_cost_ema_us : FRAMESKIP_RENDER_COST_DEFAULT_US;
-            backlog_us = (backlog_us > dec) ? (backlog_us - dec) : 0;
+            // Slightly over-pay (aggressive) to converge faster.
+            uint32_t paydown = (dec * FRAMESKIP_SKIP_PAYDOWN_NUM) / FRAMESKIP_SKIP_PAYDOWN_DEN;
+            backlog_us = (backlog_us > paydown) ? (backlog_us - paydown) : 0;
         }
 #endif
 
