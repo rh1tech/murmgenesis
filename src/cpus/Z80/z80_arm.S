@@ -131,7 +131,7 @@ z80_arm_exec:
     cmp     r0, #0x22
     beq     op_22_ld_nn_hl
     cmp     r0, #0x08
-    beq     op_08_ld_nn_sp
+    beq     op_08_ex_af_af1
     cmp     r0, #0x13
     beq     op_13_inc_de
     cmp     r0, #0x1B
@@ -1543,29 +1543,14 @@ op_3a_ld_a_nn:
     bgt     .Lloop
     b       .Lreturn
 
-/* 0x08: LD (nn),SP (20 cycles) */
-op_08_ld_nn_sp:
-    add     r0, r7, #1         /* low */
-    uxth    r0, r0
-    bl      RdZ80
-    mov     r5, r0
-    add     r0, r7, #2         /* high */
-    uxth    r0, r0
-    bl      RdZ80
-    orr     r5, r5, r0, lsl #8
-    uxth    r5, r5
-    ldrh    r2, [r6, #CPU_SP]
-    uxtb    r1, r2             /* low byte */
-    mov     r0, r5
-    bl      WrZ80
-    ldrh    r2, [r6, #CPU_SP]
-    lsrs    r1, r2, #8         /* high byte */
-    uxtb    r1, r1
-    add     r0, r5, #1
-    uxth    r0, r0
-    bl      WrZ80
-    add     r7, r7, #3
-    subs    r4, r4, #20
+/* 0x08: EX AF,AF' (4 cycles) */
+op_08_ex_af_af1:
+    ldrh    r5, [r6, #CPU_AF]
+    ldrh    r2, [r6, #CPU_AF1]
+    strh    r2, [r6, #CPU_AF]
+    strh    r5, [r6, #CPU_AF1]
+    add     r7, r7, #1
+    subs    r4, r4, #4
     bgt     .Lloop
     b       .Lreturn
 
