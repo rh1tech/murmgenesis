@@ -73,7 +73,22 @@
 // Strong blink protection: never skip the opposite-parity (even/odd) frame after
 // rendering. This keeps 60Hz alternating effects (invincibility blinking) visible
 // even when we fall back to ~30Hz rendering.
-#define FRAMESKIP_STRONG_BLINK_PROTECTION 1
+#define FRAMESKIP_STRONG_BLINK_PROTECTION 0
+
+// Stronger blink protection: when frameskipping is active, render in pairs
+// (two consecutive frames) when we do render. This avoids aliasing 1-frame
+// on/off blinking into "always invisible" when rendering cadence becomes periodic.
+#define FRAMESKIP_RENDER_PAIRS_WHEN_SKIPPING 1
+
+// Extra blink protection: break phase lock by occasionally rendering even when
+// the controller would skip. This is intentionally lightweight (LCG) and only
+// applies while in skip mode.
+#define FRAMESKIP_DITHER_RENDER_WHEN_SKIPPING 1
+#define FRAMESKIP_DITHER_MASK 0x3u  // 0x3 => ~1/4 chance; larger mask => rarer
+
+// When recovering from skip mode, render a short burst of consecutive frames.
+// This increases the chance we capture both phases of longer blink patterns.
+#define FRAMESKIP_RENDER_BURST_LEN 4u
 
 // Aggressiveness tuning (higher = skip earlier / recover faster)
 // - Threshold divisor: lower means more aggressive skipping.
@@ -441,8 +456,8 @@ static void __time_critical_func(emulation_loop)(void) {
     // Adaptive frameskip state
     uint32_t backlog_us = 0;                 // accumulated "time behind" (work - budget)
     uint32_t render_cost_ema_us = 0;         // EMA of render cost when we do render
-    int last_rendered_parity = -1;           // 0/1 or -1 unknown
-    uint32_t same_parity_render_count = 0;   // count of repeated parity renders (can cause blink invisibility)
+    uint32_t force_render_next = 0;          // number of upcoming frames to force render (burst)
+    uint32_t frameskip_rng = 0xC001D00Du;    // simple PRNG state for dithering
 
     while (1) {
         int hint_counter = gwenesis_vdp_regs[10];
@@ -471,30 +486,32 @@ static void __time_critical_func(emulation_loop)(void) {
 #if ENABLE_ADAPTIVE_FRAMESKIP
         // If we have backlog, prefer skipping render (saves render_cost_ema_us).
         uint32_t estimated_render_cost_us = render_cost_ema_us ? render_cost_ema_us : FRAMESKIP_RENDER_COST_DEFAULT_US;
-    if (backlog_us >= (estimated_render_cost_us / FRAMESKIP_SKIP_THRESHOLD_DIVISOR) && estimated_render_cost_us) {
-            render_this_frame = false;
+        if (force_render_next) {
+            render_this_frame = true;
+            force_render_next--;
+        } else {
+            if (backlog_us >= (estimated_render_cost_us / FRAMESKIP_SKIP_THRESHOLD_DIVISOR) && estimated_render_cost_us) {
+                render_this_frame = false;
+            }
         }
         // Safety: always render at least once every (FRAMESKIP_MAX_CONSECUTIVE + 1) frames.
         if (consecutive_skipped_frames >= FRAMESKIP_MAX_CONSECUTIVE) {
             render_this_frame = true;
         }
 
-        // Parity fairness / blink protection:
-        // Many games blink by toggling sprite visibility every frame. If we only ever render
-        // one parity (even/odd), we can miss the sprite entirely. In strong mode, never skip
-        // the opposite parity frame after a render (caps to ~30Hz but keeps blinking visible).
-        if (!render_this_frame && last_rendered_parity >= 0) {
-            int current_parity = (int)(frame_num & 1u);
-#if FRAMESKIP_STRONG_BLINK_PROTECTION
-            if (current_parity != last_rendered_parity) {
-                render_this_frame = true;
+#if FRAMESKIP_DITHER_RENDER_WHEN_SKIPPING
+        // If we're in skip mode and would skip, occasionally render anyway to avoid
+        // getting phase-locked to game blinking patterns.
+        if (!render_this_frame) {
+            bool in_skip_mode = backlog_us >= (estimated_render_cost_us / FRAMESKIP_SKIP_THRESHOLD_DIVISOR);
+            if (in_skip_mode) {
+                frameskip_rng = frameskip_rng * 1664525u + 1013904223u;
+                if ((frameskip_rng & FRAMESKIP_DITHER_MASK) == 0u) {
+                    render_this_frame = true;
+                }
             }
-#else
-            if (current_parity != last_rendered_parity && same_parity_render_count >= 1u) {
-                render_this_frame = true;
-            }
-#endif
         }
+#endif
 #endif
         if (force_render) {
             render_this_frame = true;
@@ -631,16 +648,23 @@ static void __time_critical_func(emulation_loop)(void) {
 
         if (render_this_frame) {
             consecutive_skipped_frames = 0;
-
-#if ENABLE_ADAPTIVE_FRAMESKIP
-            int current_parity = (int)(frame_num & 1u);
-            if (last_rendered_parity == current_parity) same_parity_render_count++;
-            else same_parity_render_count = 0;
-            last_rendered_parity = current_parity;
-#endif
         } else {
             consecutive_skipped_frames++;
         }
+
+#if ENABLE_ADAPTIVE_FRAMESKIP && FRAMESKIP_RENDER_PAIRS_WHEN_SKIPPING
+        // If we rendered while we're in (or recovering from) skip mode, force a short
+        // consecutive render burst to increase the odds of catching longer blink patterns.
+        if (render_this_frame && !force_render && force_render_next == 0) {
+            uint32_t estimated_render_cost_us = render_cost_ema_us ? render_cost_ema_us : FRAMESKIP_RENDER_COST_DEFAULT_US;
+            bool in_skip_mode = backlog_us >= (estimated_render_cost_us / FRAMESKIP_SKIP_THRESHOLD_DIVISOR);
+            if (in_skip_mode || consecutive_skipped_frames > 0) {
+                if (FRAMESKIP_RENDER_BURST_LEN > 1u) {
+                    force_render_next = FRAMESKIP_RENDER_BURST_LEN - 1u;
+                }
+            }
+        }
+#endif
         
         // Update sound parameters for Core 1
         sound_screen_height = screen_height;
