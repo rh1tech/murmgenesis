@@ -277,11 +277,10 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
 
             //рисуем сам видеобуфер+пространство справа
 ///                input_buffer = &graphics_buffer[(y - graphics_buffer_shift_y) * graphics_buffer_width];
-                const uint8_t* input_buffer_end = input_buffer + graphics_buffer_width;
                 if (graphics_buffer_shift_x < 0) input_buffer -= graphics_buffer_shift_x;
                 register size_t x = 0;
                 while (activ_buf_end > output_buffer) {
-                    if (input_buffer < input_buffer_end) {
+                    if (x < graphics_buffer_width) {
                         // Mask with 0x3F to get palette index (bits 6-7 are sprite/priority flags)
                         register uint8_t c = input_buffer[x++] & 0x3F;
                         // Substitute HDMI reserved colors with nearest matches
