@@ -44,6 +44,9 @@ extern void draw_pattern_fliph_sprite_over_asm(uint8_t* scr, uint32_t p, uint8_t
 /* Assembly-optimized line drawing (entire tile row) */
 extern void draw_line_b_simple_asm(uint8_t* scr, uint8_t* vram_nt, uint32_t col, uint32_t paty,
                                    uint32_t ntw_mask, uint32_t background, uint32_t tile_count);
+extern void draw_line_a_simple_asm(uint8_t* scr, uint8_t* vram_nt, uint32_t col, uint32_t paty,
+                                   uint32_t ntw_mask, uint32_t tile_count);
+extern void draw_window_line_asm(uint8_t* scr, uint8_t* vram_nt, uint32_t paty, uint32_t tile_count);
 
 /* Use assembly implementations */
 #define USE_ASM_VDP 1
@@ -629,6 +632,26 @@ void draw_line_aw(int line) {
     uint8_t col = (scrollx >> 3) & ntw_mask;
     uint8_t patx = scrollx & 7;
 
+#if USE_ASM_LINE
+    /* Use assembly for non-column-scrolling Plane A */
+    if (!column_scrolling && PlanA_first < PlanA_last) {
+        uint16_t scrolly = *vsram + line;
+        uint8_t row = (scrolly >> 3) & nth_mask;
+        uint8_t paty = scrolly & 7;
+        
+        unsigned int nt_base = ntaddr + row * ntwidth_x2;
+        int tile_count = (PlanA_last - PlanA_first + patx + 7) / 8;
+        
+        draw_line_a_simple_asm(
+            pos - patx,
+            VRAM + nt_base,
+            col,
+            paty,
+            ntw_mask,
+            tile_count
+        );
+    } else {
+#endif
     unsigned int numcell = 0;
     pos -= patx;
     while (pos < end) {
@@ -650,6 +673,9 @@ void draw_line_aw(int line) {
         if (column_scrolling && (numcell & 1) == 0)
             vsram += 2;
     }
+#if USE_ASM_LINE
+    }
+#endif
 
     // Second Draw Window Plane
     int row = line >> 3;
@@ -661,12 +687,25 @@ void draw_line_aw(int line) {
 
     unsigned int nt = base_w + row * wdwidth_x2 + Window_first / 4;
 
+#if USE_ASM_LINE
+    /* Use assembly for Window plane */
+    int window_tiles = (Window_last - Window_first) / 8;
+    if (window_tiles > 0) {
+        draw_window_line_asm(
+            scr + Window_first,
+            VRAM + nt,
+            paty,
+            window_tiles
+        );
+    }
+#else
     #pragma GCC unroll(64)
     for (int i = Window_first / 8; i < Window_last / 8; ++i) {
         draw_pattern_planeA(end, FETCH16VRAM(nt), paty);
         nt += 2;
         end += 8;
     }
+#endif
 }
 
 /******************************************************************************
