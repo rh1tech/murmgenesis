@@ -5823,20 +5823,20 @@ m68k_run_fast:
     ubfx    r0, r10, #3, #3
     cmp     r0, #0
     beq     .Lhandle_eor_32_d
-    @ cmp     r0, #2
-    @ beq     .Lhandle_eor_32_ai
-    @ cmp     r0, #3
-    @ beq     .Lhandle_eor_32_pi
+    cmp     r0, #2
+    beq     .Lhandle_eor_32_ai
+    cmp     r0, #3
+    beq     .Lhandle_eor_32_pi
     b.w     .Lno_inline
 
 .Lcheck_eor_16:
     ubfx    r0, r10, #3, #3
     cmp     r0, #0
     beq     .Lhandle_eor_16_d
-    @ cmp     r0, #2
-    @ beq     .Lhandle_eor_16_ai
-    @ cmp     r0, #3
-    @ beq     .Lhandle_eor_16_pi
+    cmp     r0, #2
+    beq     .Lhandle_eor_16_ai
+    cmp     r0, #3
+    beq     .Lhandle_eor_16_pi
     b.w     .Lno_inline
 
 .Lcheck_eor_8:
@@ -5956,21 +5956,21 @@ m68k_run_fast:
     lsl     r0, r0, #2
     ldr     r11, [r2, r0]           @ r11 = address
     
-    /* Check RAM range */
-    movw    r2, #:lower16:M68K_RAM
-    movt    r2, #:upper16:M68K_RAM
-    ldr     r2, [r2]
-    sub     r3, r11, #0x00FF0000
-    cmp     r3, #0x10000
-    bhs     .Lhandle_eor_32_ai_slow
+    /* Check if addr >= 0xFF0000 for RAM */
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r11, r2
+    blo     .Lhandle_eor_32_ai_slow
     
     /* Fast RAM path - read long, XOR, write back */
-    add     r3, r2, r3
-    ldr     r12, [r3]
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r3, r11, r3
+    ldr     r12, [r2, r3]
     ror     r12, r12, #16           @ swap for big-endian
     eor     r12, r12, r1            @ XOR
     ror     r12, r12, #16           @ swap back for storage
-    str     r12, [r3]
+    str     r12, [r2, r3]
     
     /* Set flags from result (before swap-back) */
     ror     r12, r12, #16           @ get result back
@@ -5987,6 +5987,8 @@ m68k_run_fast:
 
 .Lhandle_eor_32_ai_slow:
     b.w     .Lno_inline
+
+.ltorg
 
 /*
  * EOR.L Dn,(An)+ - Exclusive OR to Memory with Post-increment
@@ -6008,21 +6010,21 @@ m68k_run_fast:
     add     r12, r11, #4            @ post-increment by 4
     str     r12, [r6, r3]           @ save updated An
     
-    /* Check RAM range */
-    movw    r2, #:lower16:M68K_RAM
-    movt    r2, #:upper16:M68K_RAM
-    ldr     r2, [r2]
-    sub     r3, r11, #0x00FF0000
-    cmp     r3, #0x10000
-    bhs     .Lhandle_eor_32_pi_slow
+    /* Check if addr >= 0xFF0000 for RAM */
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r11, r2
+    blo     .Lhandle_eor_32_pi_slow
     
     /* Fast RAM path */
-    add     r3, r2, r3
-    ldr     r12, [r3]
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r3, r11, r3
+    ldr     r12, [r2, r3]
     ror     r12, r12, #16
     eor     r12, r12, r1
     ror     r12, r12, #16
-    str     r12, [r3]
+    str     r12, [r2, r3]
     
     /* Set flags */
     ror     r12, r12, #16
@@ -6039,6 +6041,8 @@ m68k_run_fast:
 
 .Lhandle_eor_32_pi_slow:
     b.w     .Lno_inline
+
+.ltorg
 
 /*
  * EOR.W Dn,(An) - Exclusive OR Word to Memory
@@ -6058,22 +6062,22 @@ m68k_run_fast:
     lsl     r0, r0, #2
     ldr     r11, [r2, r0]           @ r11 = address
     
-    /* Check RAM range */
-    movw    r2, #:lower16:M68K_RAM
-    movt    r2, #:upper16:M68K_RAM
-    ldr     r2, [r2]
-    sub     r3, r11, #0x00FF0000
-    cmp     r3, #0x10000
-    bhs     .Lhandle_eor_16_ai_slow
+    /* Check if addr >= 0xFF0000 for RAM */
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r11, r2
+    blo     .Lhandle_eor_16_ai_slow
     
     /* Fast RAM path - read word, XOR, write back */
-    add     r3, r2, r3
-    ldrh    r12, [r3]
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r3, r11, r3
+    ldrh    r12, [r2, r3]
     rev16   r12, r12                @ swap bytes for big-endian
     eor     r12, r12, r1            @ XOR
     uxth    r12, r12
     rev16   r0, r12                 @ swap back for storage
-    strh    r0, [r3]
+    strh    r0, [r2, r3]
     
     /* Set flags */
     lsr     r0, r12, #8
@@ -6089,6 +6093,8 @@ m68k_run_fast:
 
 .Lhandle_eor_16_ai_slow:
     b.w     .Lno_inline
+
+.ltorg
 
 /*
  * EOR.W Dn,(An)+ - Exclusive OR Word to Memory with Post-increment
@@ -6111,22 +6117,22 @@ m68k_run_fast:
     add     r12, r11, #2            @ post-increment by 2
     str     r12, [r6, r3]           @ save updated An
     
-    /* Check RAM range */
-    movw    r2, #:lower16:M68K_RAM
-    movt    r2, #:upper16:M68K_RAM
-    ldr     r2, [r2]
-    sub     r3, r11, #0x00FF0000
-    cmp     r3, #0x10000
-    bhs     .Lhandle_eor_16_pi_slow
+    /* Check if addr >= 0xFF0000 for RAM */
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r11, r2
+    blo     .Lhandle_eor_16_pi_slow
     
     /* Fast RAM path */
-    add     r3, r2, r3
-    ldrh    r12, [r3]
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r3, r11, r3
+    ldrh    r12, [r2, r3]
     rev16   r12, r12
     eor     r12, r12, r1
     uxth    r12, r12
     rev16   r0, r12
-    strh    r0, [r3]
+    strh    r0, [r2, r3]
     
     /* Set flags */
     lsr     r0, r12, #8
