@@ -7936,7 +7936,7 @@ m68k_run_fast:
     cmp     r0, #2
     beq     .Lhandle_sub_16_er_ai
     @ cmp     r0, #3
-    @ beq     .Lhandle_sub_16_er_pi   @ TODO: debug this handler
+    @ beq     .Lhandle_sub_16_er_pi   @ BUG: breaks emulation - needs investigation
     b.w     .Lno_inline
 
 .Lsub_size_b:
