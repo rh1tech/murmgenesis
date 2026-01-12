@@ -7927,10 +7927,10 @@ m68k_run_fast:
     beq     .Lhandle_sub_16_er_d
     cmp     r0, #1
     beq     .Lhandle_sub_16_er_a
-    @ cmp     r0, #2
-    @ beq     .Lhandle_sub_16_er_ai
+    cmp     r0, #2
+    beq     .Lhandle_sub_16_er_ai
     @ cmp     r0, #3
-    @ beq     .Lhandle_sub_16_er_pi
+    @ beq     .Lhandle_sub_16_er_pi   @ TODO: debug this handler
     b.w     .Lno_inline
 
 .Lsub_size_b:
@@ -8322,46 +8322,77 @@ m68k_run_fast:
  * 8 cycles
  */
 .Lhandle_sub_16_er_ai:
-    /* Get An pointer (bits 0-2) */
+    /* Save dest register index */
+    ubfx    r11, r10, #9, #3        @ r11 = dest Dn index
+    
+    /* Get source address from An */
     and     r0, r10, #7
     add     r0, r0, #8
     lsl     r0, r0, #2
     add     r2, r5, #M68K_DAR
-    ldr     r11, [r2, r0]           @ r11 = address
+    ldr     r0, [r2, r0]            @ r0 = address
     
-    /* Check RAM range */
-    movw    r2, #:lower16:M68K_RAM
-    movt    r2, #:upper16:M68K_RAM
-    ldr     r2, [r2]
-    sub     r3, r11, #0x00FF0000
-    cmp     r3, #0x10000
-    bhs     .Lhandle_sub_16_er_ai_slow
+    /* Fast ROM read - check if addr < 0x800000 */
+    movw    r1, #0
+    movt    r1, #0x80
+    cmp     r0, r1
+    bhs     .Lsub_16_ai_not_rom
     
-    /* Fast RAM path - read word */
-    add     r3, r2, r3
-    ldrh    r3, [r3]
-    rev16   r3, r3                  @ big-endian swap
-    sxth    r3, r3                  @ sign-extend for flags
+    ldr     r1, [r9]                @ ROM_DATA
+    ldrh    r1, [r1, r0]
+    rev16   r1, r1
+    b       .Lsub_16_ai_do_sub
     
-    /* Get destination Dn and subtract */
-    ubfx    r0, r10, #9, #3
-    lsl     r1, r0, #2
+.Lsub_16_ai_not_rom:
+    /* Check if addr >= 0xFF0000 for RAM */
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r0, r2
+    blo     .Lsub_16_ai_slow
+    
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r0, r0, r3
+    ldrh    r1, [r2, r0]
+    rev16   r1, r1
+    b       .Lsub_16_ai_do_sub
+    
+.Lsub_16_ai_slow:
+    str     r4, [r5, #M68K_CYCLES]
+    push    {r11}
+    bl      m68k_read_memory_16
+    pop     {r11}
+    mov     r1, r0
+    ldr     r4, [r5, #M68K_CYCLES]
+    
+.Lsub_16_ai_do_sub:
+    /* Get destination Dn */
+    lsl     r0, r11, #2
     add     r2, r5, #M68K_DAR
-    ldr     r0, [r2, r1]
-    sxth    r12, r0                 @ sign-extend low word
+    ldr     r3, [r2, r0]
+    uxth    r12, r3                 @ r12 = dest low word
+    uxth    r1, r1                  @ r1 = source word
     
-    subs    r12, r12, r3
-    bfi     r0, r12, #0, #16        @ insert result into low word
-    str     r0, [r2, r1]
+    /* Subtract using shift-left for proper 16-bit flags */
+    lsl     r12, r12, #16
+    lsl     r1, r1, #16
+    subs    r12, r12, r1
+    
+    /* Read flags immediately */
+    mrs     r0, APSR
+    
+    /* Get result and store */
+    lsr     r12, r12, #16
+    bfi     r3, r12, #0, #16
+    lsl     r1, r11, #2
+    str     r3, [r2, r1]
     
     /* Set flags */
-    uxth    r12, r12
-    lsr     r0, r12, #8
-    and     r0, r0, #0x80
-    str     r0, [r5, #M68K_N_FLAG]
+    lsr     r1, r12, #8
+    and     r1, r1, #0x80
+    str     r1, [r5, #M68K_N_FLAG]
     str     r12, [r5, #M68K_NOT_Z_FLAG]
     
-    mrs     r0, APSR
     ubfx    r1, r0, #28, #1
     lsl     r1, r1, #7
     str     r1, [r5, #M68K_V_FLAG]
@@ -8371,11 +8402,10 @@ m68k_run_fast:
     str     r1, [r5, #M68K_C_FLAG]
     str     r1, [r5, #M68K_X_FLAG]
     
-    add     r4, r4, #32
+    add     r4, r4, #56
     b       .Lmain_loop
 
-.Lhandle_sub_16_er_ai_slow:
-    b.w     .Lno_inline
+.ltorg
 
 /*
  * SUB.W (An)+,Dn - Subtract Memory Word from Data Register with Post-increment
@@ -8383,48 +8413,79 @@ m68k_run_fast:
  * 8 cycles
  */
 .Lhandle_sub_16_er_pi:
-    /* Get An pointer (bits 0-2) and increment */
+    /* Save dest register index */
+    ubfx    r11, r10, #9, #3        @ r11 = dest Dn index
+    
+    /* Get source address and post-increment */
     and     r0, r10, #7
     add     r0, r0, #8
     lsl     r3, r0, #2
     add     r6, r5, #M68K_DAR
-    ldr     r11, [r6, r3]           @ r11 = address
-    add     r12, r11, #2            @ post-increment by 2
+    ldr     r0, [r6, r3]            @ r0 = address
+    add     r12, r0, #2             @ post-increment by 2
     str     r12, [r6, r3]           @ save updated An
     
-    /* Check RAM range */
-    movw    r2, #:lower16:M68K_RAM
-    movt    r2, #:upper16:M68K_RAM
-    ldr     r2, [r2]
-    sub     r3, r11, #0x00FF0000
-    cmp     r3, #0x10000
-    bhs     .Lhandle_sub_16_er_pi_slow
+    /* Fast ROM read - check if addr < 0x800000 */
+    movw    r1, #0
+    movt    r1, #0x80
+    cmp     r0, r1
+    bhs     .Lsub_16_pi_not_rom
     
-    /* Fast RAM path - read word */
-    add     r3, r2, r3
-    ldrh    r3, [r3]
-    rev16   r3, r3                  @ big-endian swap
-    sxth    r3, r3                  @ sign-extend for flags
+    ldr     r1, [r9]                @ ROM_DATA
+    ldrh    r1, [r1, r0]
+    rev16   r1, r1
+    b       .Lsub_16_pi_do_sub
     
-    /* Get destination Dn and subtract */
-    ubfx    r0, r10, #9, #3
-    lsl     r1, r0, #2
+.Lsub_16_pi_not_rom:
+    /* Check if addr >= 0xFF0000 for RAM */
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r0, r2
+    blo     .Lsub_16_pi_slow
+    
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r0, r0, r3
+    ldrh    r1, [r2, r0]
+    rev16   r1, r1
+    b       .Lsub_16_pi_do_sub
+    
+.Lsub_16_pi_slow:
+    str     r4, [r5, #M68K_CYCLES]
+    push    {r11}
+    bl      m68k_read_memory_16
+    pop     {r11}
+    mov     r1, r0
+    ldr     r4, [r5, #M68K_CYCLES]
+    
+.Lsub_16_pi_do_sub:
+    /* Get destination Dn */
+    lsl     r0, r11, #2
     add     r2, r5, #M68K_DAR
-    ldr     r0, [r2, r1]
-    sxth    r12, r0
+    ldr     r3, [r2, r0]
+    uxth    r12, r3
+    uxth    r1, r1
     
-    subs    r12, r12, r3
-    bfi     r0, r12, #0, #16
-    str     r0, [r2, r1]
+    /* Subtract using shift-left for proper 16-bit flags */
+    lsl     r12, r12, #16
+    lsl     r1, r1, #16
+    subs    r12, r12, r1
+    
+    /* Read flags immediately */
+    mrs     r0, APSR
+    
+    /* Get result and store */
+    lsr     r12, r12, #16
+    bfi     r3, r12, #0, #16
+    lsl     r1, r11, #2
+    str     r3, [r2, r1]
     
     /* Set flags */
-    uxth    r12, r12
-    lsr     r0, r12, #8
-    and     r0, r0, #0x80
-    str     r0, [r5, #M68K_N_FLAG]
+    lsr     r1, r12, #8
+    and     r1, r1, #0x80
+    str     r1, [r5, #M68K_N_FLAG]
     str     r12, [r5, #M68K_NOT_Z_FLAG]
     
-    mrs     r0, APSR
     ubfx    r1, r0, #28, #1
     lsl     r1, r1, #7
     str     r1, [r5, #M68K_V_FLAG]
@@ -8434,11 +8495,10 @@ m68k_run_fast:
     str     r1, [r5, #M68K_C_FLAG]
     str     r1, [r5, #M68K_X_FLAG]
     
-    add     r4, r4, #32
+    add     r4, r4, #56
     b       .Lmain_loop
 
-.Lhandle_sub_16_er_pi_slow:
-    b.w     .Lno_inline
+.ltorg
 
 /* ======================================================================
  * ADD HANDLERS - Addition operations
@@ -8526,10 +8586,10 @@ m68k_run_fast:
     beq     .Lhandle_add_16_er_d
     cmp     r0, #1
     beq     .Lhandle_add_16_er_a
-    @ cmp     r0, #2
-    @ beq     .Lhandle_add_16_er_ai
-    @ cmp     r0, #3
-    @ beq     .Lhandle_add_16_er_pi
+    cmp     r0, #2
+    beq     .Lhandle_add_16_er_ai
+    cmp     r0, #3
+    beq     .Lhandle_add_16_er_pi
     b.w     .Lno_inline
 
 .Ladd_size_b:
@@ -8918,46 +8978,77 @@ m68k_run_fast:
  * 8 cycles
  */
 .Lhandle_add_16_er_ai:
-    /* Get An pointer (bits 0-2) */
+    /* Save dest register index */
+    ubfx    r11, r10, #9, #3        @ r11 = dest Dn index
+    
+    /* Get source address from An */
     and     r0, r10, #7
     add     r0, r0, #8
     lsl     r0, r0, #2
     add     r2, r5, #M68K_DAR
-    ldr     r11, [r2, r0]           @ r11 = address
+    ldr     r0, [r2, r0]            @ r0 = address
     
-    /* Check RAM range */
-    movw    r2, #:lower16:M68K_RAM
-    movt    r2, #:upper16:M68K_RAM
-    ldr     r2, [r2]
-    sub     r3, r11, #0x00FF0000
-    cmp     r3, #0x10000
-    bhs     .Lhandle_add_16_er_ai_slow
+    /* Fast ROM read - check if addr < 0x800000 */
+    movw    r1, #0
+    movt    r1, #0x80
+    cmp     r0, r1
+    bhs     .Ladd_16_ai_not_rom
     
-    /* Fast RAM path - read word */
-    add     r3, r2, r3
-    ldrh    r3, [r3]
-    rev16   r3, r3                  @ big-endian swap
-    sxth    r3, r3                  @ sign-extend for flags
+    ldr     r1, [r9]                @ ROM_DATA
+    ldrh    r1, [r1, r0]
+    rev16   r1, r1
+    b       .Ladd_16_ai_do_add
     
-    /* Get destination Dn and add */
-    ubfx    r0, r10, #9, #3
-    lsl     r1, r0, #2
+.Ladd_16_ai_not_rom:
+    /* Check if addr >= 0xFF0000 for RAM */
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r0, r2
+    blo     .Ladd_16_ai_slow
+    
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r0, r0, r3
+    ldrh    r1, [r2, r0]
+    rev16   r1, r1
+    b       .Ladd_16_ai_do_add
+    
+.Ladd_16_ai_slow:
+    str     r4, [r5, #M68K_CYCLES]
+    push    {r11}
+    bl      m68k_read_memory_16
+    pop     {r11}
+    mov     r1, r0
+    ldr     r4, [r5, #M68K_CYCLES]
+    
+.Ladd_16_ai_do_add:
+    /* Get destination Dn */
+    lsl     r0, r11, #2
     add     r2, r5, #M68K_DAR
-    ldr     r0, [r2, r1]
-    sxth    r12, r0                 @ sign-extend low word
+    ldr     r3, [r2, r0]
+    uxth    r12, r3                 @ r12 = dest low word
+    uxth    r1, r1                  @ r1 = source word
     
-    adds    r12, r12, r3
-    bfi     r0, r12, #0, #16        @ insert result into low word
-    str     r0, [r2, r1]
+    /* Add using shift-left for proper 16-bit flags */
+    lsl     r12, r12, #16
+    lsl     r1, r1, #16
+    adds    r12, r12, r1
+    
+    /* Read flags immediately */
+    mrs     r0, APSR
+    
+    /* Get result and store */
+    lsr     r12, r12, #16
+    bfi     r3, r12, #0, #16
+    lsl     r1, r11, #2
+    str     r3, [r2, r1]
     
     /* Set flags */
-    uxth    r12, r12
-    lsr     r0, r12, #8
-    and     r0, r0, #0x80
-    str     r0, [r5, #M68K_N_FLAG]
+    lsr     r1, r12, #8
+    and     r1, r1, #0x80
+    str     r1, [r5, #M68K_N_FLAG]
     str     r12, [r5, #M68K_NOT_Z_FLAG]
     
-    mrs     r0, APSR
     ubfx    r1, r0, #28, #1
     lsl     r1, r1, #7
     str     r1, [r5, #M68K_V_FLAG]
@@ -8966,11 +9057,8 @@ m68k_run_fast:
     str     r1, [r5, #M68K_C_FLAG]
     str     r1, [r5, #M68K_X_FLAG]
     
-    add     r4, r4, #32
+    add     r4, r4, #56
     b       .Lmain_loop
-
-.Lhandle_add_16_er_ai_slow:
-    b.w     .Lno_inline
 
 /*
  * ADD.W (An)+,Dn - Add Memory Word to Data Register with Post-increment
@@ -8978,48 +9066,79 @@ m68k_run_fast:
  * 8 cycles
  */
 .Lhandle_add_16_er_pi:
-    /* Get An pointer (bits 0-2) and increment */
+    /* Save dest register index */
+    ubfx    r11, r10, #9, #3        @ r11 = dest Dn index
+    
+    /* Get source address and post-increment */
     and     r0, r10, #7
     add     r0, r0, #8
     lsl     r3, r0, #2
     add     r6, r5, #M68K_DAR
-    ldr     r11, [r6, r3]           @ r11 = address
-    add     r12, r11, #2            @ post-increment by 2
+    ldr     r0, [r6, r3]            @ r0 = address
+    add     r12, r0, #2             @ post-increment by 2
     str     r12, [r6, r3]           @ save updated An
     
-    /* Check RAM range */
-    movw    r2, #:lower16:M68K_RAM
-    movt    r2, #:upper16:M68K_RAM
-    ldr     r2, [r2]
-    sub     r3, r11, #0x00FF0000
-    cmp     r3, #0x10000
-    bhs     .Lhandle_add_16_er_pi_slow
+    /* Fast ROM read - check if addr < 0x800000 */
+    movw    r1, #0
+    movt    r1, #0x80
+    cmp     r0, r1
+    bhs     .Ladd_16_pi_not_rom
     
-    /* Fast RAM path - read word */
-    add     r3, r2, r3
-    ldrh    r3, [r3]
-    rev16   r3, r3                  @ big-endian swap
-    sxth    r3, r3                  @ sign-extend for flags
+    ldr     r1, [r9]                @ ROM_DATA
+    ldrh    r1, [r1, r0]
+    rev16   r1, r1
+    b       .Ladd_16_pi_do_add
     
-    /* Get destination Dn and add */
-    ubfx    r0, r10, #9, #3
-    lsl     r1, r0, #2
+.Ladd_16_pi_not_rom:
+    /* Check if addr >= 0xFF0000 for RAM */
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r0, r2
+    blo     .Ladd_16_pi_slow
+    
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r0, r0, r3
+    ldrh    r1, [r2, r0]
+    rev16   r1, r1
+    b       .Ladd_16_pi_do_add
+    
+.Ladd_16_pi_slow:
+    str     r4, [r5, #M68K_CYCLES]
+    push    {r11}
+    bl      m68k_read_memory_16
+    pop     {r11}
+    mov     r1, r0
+    ldr     r4, [r5, #M68K_CYCLES]
+    
+.Ladd_16_pi_do_add:
+    /* Get destination Dn */
+    lsl     r0, r11, #2
     add     r2, r5, #M68K_DAR
-    ldr     r0, [r2, r1]
-    sxth    r12, r0
+    ldr     r3, [r2, r0]
+    uxth    r12, r3
+    uxth    r1, r1
     
-    adds    r12, r12, r3
-    bfi     r0, r12, #0, #16
-    str     r0, [r2, r1]
+    /* Add using shift-left for proper 16-bit flags */
+    lsl     r12, r12, #16
+    lsl     r1, r1, #16
+    adds    r12, r12, r1
+    
+    /* Read flags immediately */
+    mrs     r0, APSR
+    
+    /* Get result and store */
+    lsr     r12, r12, #16
+    bfi     r3, r12, #0, #16
+    lsl     r1, r11, #2
+    str     r3, [r2, r1]
     
     /* Set flags */
-    uxth    r12, r12
-    lsr     r0, r12, #8
-    and     r0, r0, #0x80
-    str     r0, [r5, #M68K_N_FLAG]
+    lsr     r1, r12, #8
+    and     r1, r1, #0x80
+    str     r1, [r5, #M68K_N_FLAG]
     str     r12, [r5, #M68K_NOT_Z_FLAG]
     
-    mrs     r0, APSR
     ubfx    r1, r0, #28, #1
     lsl     r1, r1, #7
     str     r1, [r5, #M68K_V_FLAG]
@@ -9028,11 +9147,8 @@ m68k_run_fast:
     str     r1, [r5, #M68K_C_FLAG]
     str     r1, [r5, #M68K_X_FLAG]
     
-    add     r4, r4, #32
+    add     r4, r4, #56
     b       .Lmain_loop
-
-.Lhandle_add_16_er_pi_slow:
-    b.w     .Lno_inline
 
 .ltorg
 
