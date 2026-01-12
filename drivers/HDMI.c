@@ -640,9 +640,17 @@ void graphics_set_palette_hdmi(uint8_t i, uint32_t color888) {
     }
 
     uint64_t* conv_color64 = (uint64_t *)conv_color;
-    const uint8_t R = (color888 >> 16) & 0xff;
-    const uint8_t G = (color888 >> 8) & 0xff;
-    const uint8_t B = (color888 >> 0) & 0xff;
+    uint8_t R = (color888 >> 16) & 0xff;
+    uint8_t G = (color888 >> 8) & 0xff;
+    uint8_t B = (color888 >> 0) & 0xff;
+    
+    // At 378 MHz, pure black causes HDMI clock recovery issues due to
+    // fractional PIO divider jitter and lack of TMDS transitions.
+    // Substitute with near-black to ensure sufficient transitions.
+    if (R == 0 && G == 0 && B == 0) {
+        R = G = B = 2;  // Near-black: imperceptible but HDMI-stable
+    }
+    
     conv_color64[i * 2] = get_ser_diff_data(tmds_encoder(R), tmds_encoder(G), tmds_encoder(B));
     conv_color64[i * 2 + 1] = conv_color64[i * 2] ^ 0x0003ffffffffffffl;
 };

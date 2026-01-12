@@ -939,6 +939,7 @@ int main(void) {
     
     // Set up Genesis palette after ROM selection
     setup_genesis_palette();
+    graphics_restore_sync_colors();  // Restore HDMI sync after palette init
     
     // Load selected ROM
     LOG("Loading ROM: %s\n", selected_rom);
