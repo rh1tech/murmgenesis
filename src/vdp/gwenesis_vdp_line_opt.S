@@ -370,58 +370,131 @@ draw_line_a_simple_asm:
     bne     .La_flip
     
     /* === No horizontal flip - draw 8 pixels in order (overlay) === */
-    /* Only write non-transparent pixels */
+    /* Only write non-transparent pixels, respecting priority */
     
+    /* Check if this tile is high priority */
+    tst     r11, #PIXATTR_HIPRI
+    bne     .La_nf_hipri
+    
+    /* Low priority Plane A - check Plane B priority before overwriting */
     /* PIX0 = bits 7:4 -> scr[0] */
+    ubfx    r3, lr, #4, #4
+    cmp     r3, #0
+    beq     .La_nf_p1
+    ldrb    r12, [r7, #0]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_nf_p1
+    orr     r3, r3, r11
+    strb    r3, [r7, #0]
+.La_nf_p1:
+    ubfx    r3, lr, #0, #4
+    cmp     r3, #0
+    beq     .La_nf_p2
+    ldrb    r12, [r7, #1]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_nf_p2
+    orr     r3, r3, r11
+    strb    r3, [r7, #1]
+.La_nf_p2:
+    ubfx    r3, lr, #12, #4
+    cmp     r3, #0
+    beq     .La_nf_p3
+    ldrb    r12, [r7, #2]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_nf_p3
+    orr     r3, r3, r11
+    strb    r3, [r7, #2]
+.La_nf_p3:
+    ubfx    r3, lr, #8, #4
+    cmp     r3, #0
+    beq     .La_nf_p4
+    ldrb    r12, [r7, #3]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_nf_p4
+    orr     r3, r3, r11
+    strb    r3, [r7, #3]
+.La_nf_p4:
+    ubfx    r3, lr, #20, #4
+    cmp     r3, #0
+    beq     .La_nf_p5
+    ldrb    r12, [r7, #4]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_nf_p5
+    orr     r3, r3, r11
+    strb    r3, [r7, #4]
+.La_nf_p5:
+    ubfx    r3, lr, #16, #4
+    cmp     r3, #0
+    beq     .La_nf_p6
+    ldrb    r12, [r7, #5]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_nf_p6
+    orr     r3, r3, r11
+    strb    r3, [r7, #5]
+.La_nf_p6:
+    ubfx    r3, lr, #28, #4
+    cmp     r3, #0
+    beq     .La_nf_p7
+    ldrb    r12, [r7, #6]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_nf_p7
+    orr     r3, r3, r11
+    strb    r3, [r7, #6]
+.La_nf_p7:
+    ubfx    r3, lr, #24, #4
+    cmp     r3, #0
+    beq     .La_next_tile
+    ldrb    r12, [r7, #7]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_next_tile
+    orr     r3, r3, r11
+    strb    r3, [r7, #7]
+    b       .La_next_tile
+    
+.La_nf_hipri:
+    /* High priority - always overwrite */
     ubfx    r3, lr, #4, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #0]
     
-    /* PIX1 = bits 3:0 -> scr[1] */
     ubfx    r3, lr, #0, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #1]
     
-    /* PIX2 = bits 15:12 -> scr[2] */
     ubfx    r3, lr, #12, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #2]
     
-    /* PIX3 = bits 11:8 -> scr[3] */
     ubfx    r3, lr, #8, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #3]
     
-    /* PIX4 = bits 23:20 -> scr[4] */
     ubfx    r3, lr, #20, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #4]
     
-    /* PIX5 = bits 19:16 -> scr[5] */
     ubfx    r3, lr, #16, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #5]
     
-    /* PIX6 = bits 31:28 -> scr[6] */
     ubfx    r3, lr, #28, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #6]
     
-    /* PIX7 = bits 27:24 -> scr[7] */
     ubfx    r3, lr, #24, #4
     cmp     r3, #0
     itt     ne
@@ -433,56 +506,129 @@ draw_line_a_simple_asm:
 .La_flip:
     /* === Horizontal flip - draw 8 pixels in reverse order === */
     
+    /* Check if this tile is high priority */
+    tst     r11, #PIXATTR_HIPRI
+    bne     .La_f_hipri
+    
+    /* Low priority - check Plane B priority before overwriting */
     /* PIX7 -> scr[0] */
+    ubfx    r3, lr, #24, #4
+    cmp     r3, #0
+    beq     .La_f_p1
+    ldrb    r12, [r7, #0]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_f_p1
+    orr     r3, r3, r11
+    strb    r3, [r7, #0]
+.La_f_p1:
+    ubfx    r3, lr, #28, #4
+    cmp     r3, #0
+    beq     .La_f_p2
+    ldrb    r12, [r7, #1]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_f_p2
+    orr     r3, r3, r11
+    strb    r3, [r7, #1]
+.La_f_p2:
+    ubfx    r3, lr, #16, #4
+    cmp     r3, #0
+    beq     .La_f_p3
+    ldrb    r12, [r7, #2]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_f_p3
+    orr     r3, r3, r11
+    strb    r3, [r7, #2]
+.La_f_p3:
+    ubfx    r3, lr, #20, #4
+    cmp     r3, #0
+    beq     .La_f_p4
+    ldrb    r12, [r7, #3]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_f_p4
+    orr     r3, r3, r11
+    strb    r3, [r7, #3]
+.La_f_p4:
+    ubfx    r3, lr, #8, #4
+    cmp     r3, #0
+    beq     .La_f_p5
+    ldrb    r12, [r7, #4]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_f_p5
+    orr     r3, r3, r11
+    strb    r3, [r7, #4]
+.La_f_p5:
+    ubfx    r3, lr, #12, #4
+    cmp     r3, #0
+    beq     .La_f_p6
+    ldrb    r12, [r7, #5]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_f_p6
+    orr     r3, r3, r11
+    strb    r3, [r7, #5]
+.La_f_p6:
+    ubfx    r3, lr, #0, #4
+    cmp     r3, #0
+    beq     .La_f_p7
+    ldrb    r12, [r7, #6]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_f_p7
+    orr     r3, r3, r11
+    strb    r3, [r7, #6]
+.La_f_p7:
+    ubfx    r3, lr, #4, #4
+    cmp     r3, #0
+    beq     .La_next_tile
+    ldrb    r12, [r7, #7]
+    tst     r12, #PIXATTR_HIPRI
+    bne     .La_next_tile
+    orr     r3, r3, r11
+    strb    r3, [r7, #7]
+    b       .La_next_tile
+
+.La_f_hipri:
+    /* High priority - always overwrite */
     ubfx    r3, lr, #24, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #0]
     
-    /* PIX6 -> scr[1] */
     ubfx    r3, lr, #28, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #1]
     
-    /* PIX5 -> scr[2] */
     ubfx    r3, lr, #16, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #2]
     
-    /* PIX4 -> scr[3] */
     ubfx    r3, lr, #20, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #3]
     
-    /* PIX3 -> scr[4] */
     ubfx    r3, lr, #8, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #4]
     
-    /* PIX2 -> scr[5] */
     ubfx    r3, lr, #12, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #5]
     
-    /* PIX1 -> scr[6] */
     ubfx    r3, lr, #0, #4
     cmp     r3, #0
     itt     ne
     orrne   r3, r3, r11
     strbne  r3, [r7, #6]
     
-    /* PIX0 -> scr[7] */
     ubfx    r3, lr, #4, #4
     cmp     r3, #0
     itt     ne
