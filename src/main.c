@@ -64,7 +64,7 @@
 #define DISABLE_FRAME_LIMITING 0
 
 // Use assembly-optimized M68K loop (set to 0 to use original C loop for debugging)
-#define USE_M68K_FAST_LOOP 1
+#define USE_M68K_FAST_LOOP 0
 
 // Frame skipping (video-only): reduce rendering cost to keep emulation/audio stable.
 // The user requested a deterministic pattern (no adaptiveness).

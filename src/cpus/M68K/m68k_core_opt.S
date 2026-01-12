@@ -5783,6 +5783,8 @@ m68k_run_fast:
     beq     .Lhandle_cmp_32_ai
     cmp     r0, #3
     beq     .Lhandle_cmp_32_pi
+    cmp     r0, #5
+    beq     .Lhandle_cmp_32_di
     b.w     .Lno_inline
 
 .Lcmp_size_w:
@@ -5795,6 +5797,8 @@ m68k_run_fast:
     beq     .Lhandle_cmp_16_ai
     cmp     r0, #3
     beq     .Lhandle_cmp_16_pi
+    cmp     r0, #5
+    beq     .Lhandle_cmp_16_di
     b.w     .Lno_inline
 
 .Lcmp_size_b:
@@ -6391,6 +6395,181 @@ m68k_run_fast:
     
     add     r4, r4, #98             @ 14 * 7 cycles
     b       .Lmain_loop
+
+/*
+ * CMP.L (d16,An),Dn - Compare Memory with Displacement to Data Register
+ * Opcode: 1011 DDD 010 101 AAA (0xB0A8)
+ * 16 cycles
+ */
+.Lhandle_cmp_32_di:
+    /* Save dest register index */
+    ubfx    r11, r10, #9, #3        @ r11 = dest Dn index
+    
+    /* Get base address from An */
+    and     r0, r10, #7
+    add     r0, r0, #8
+    lsl     r0, r0, #2
+    add     r2, r5, #M68K_DAR
+    ldr     r0, [r2, r0]            @ r0 = An value
+    
+    /* Fetch displacement word */
+    ldr     r1, [r5, #M68K_PC]
+    ldr     r2, [r9]                @ ROM_DATA
+    ldrh    r3, [r2, r1]
+    rev16   r3, r3
+    sxth    r3, r3                  @ Sign-extend displacement
+    add     r0, r0, r3              @ r0 = An + d16
+    add     r1, r1, #2
+    str     r1, [r5, #M68K_PC]
+    
+    /* Fast ROM read */
+    movw    r1, #0
+    movt    r1, #0x80
+    cmp     r0, r1
+    bhs     .Lcmp_32_di_not_rom
+    
+    ldr     r1, [r9]                @ ROM_DATA
+    ldr     r1, [r1, r0]
+    ror     r1, r1, #16             @ Big-endian swap
+    b       .Lcmp_32_di_compare
+    
+.Lcmp_32_di_not_rom:
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r0, r2
+    blo     .Lcmp_32_di_slow
+    
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r0, r0, r3
+    ldr     r1, [r2, r0]
+    ror     r1, r1, #16
+    b       .Lcmp_32_di_compare
+    
+.Lcmp_32_di_slow:
+    str     r4, [r5, #M68K_CYCLES]
+    push    {r11}
+    bl      m68k_read_memory_32
+    pop     {r11}
+    mov     r1, r0
+    ldr     r4, [r5, #M68K_CYCLES]
+    
+.Lcmp_32_di_compare:
+    lsl     r0, r11, #2
+    add     r2, r5, #M68K_DAR
+    ldr     r3, [r2, r0]            @ r3 = destination Dn
+    
+    subs    r11, r3, r1
+    
+    lsr     r0, r11, #24
+    str     r0, [r5, #M68K_N_FLAG]
+    str     r11, [r5, #M68K_NOT_Z_FLAG]
+    
+    mrs     r0, APSR
+    ubfx    r1, r0, #28, #1
+    lsl     r1, r1, #7
+    str     r1, [r5, #M68K_V_FLAG]
+    
+    ubfx    r1, r0, #29, #1
+    eor     r1, r1, #1
+    lsl     r1, r1, #8
+    str     r1, [r5, #M68K_C_FLAG]
+    
+    add     r4, r4, #112            @ 16 * 7 cycles
+    b       .Lmain_loop
+
+.ltorg
+
+/*
+ * CMP.W (d16,An),Dn - Compare Memory Word with Displacement
+ * Opcode: 1011 DDD 001 101 AAA (0xB068)
+ * 12 cycles
+ */
+.Lhandle_cmp_16_di:
+    /* Save dest register index */
+    ubfx    r11, r10, #9, #3        @ r11 = dest Dn index
+    
+    /* Get base address from An */
+    and     r0, r10, #7
+    add     r0, r0, #8
+    lsl     r0, r0, #2
+    add     r2, r5, #M68K_DAR
+    ldr     r0, [r2, r0]            @ r0 = An value
+    
+    /* Fetch displacement word */
+    ldr     r1, [r5, #M68K_PC]
+    ldr     r2, [r9]                @ ROM_DATA
+    ldrh    r3, [r2, r1]
+    rev16   r3, r3
+    sxth    r3, r3                  @ Sign-extend displacement
+    add     r0, r0, r3              @ r0 = An + d16
+    add     r1, r1, #2
+    str     r1, [r5, #M68K_PC]
+    
+    /* Fast ROM read */
+    movw    r1, #0
+    movt    r1, #0x80
+    cmp     r0, r1
+    bhs     .Lcmp_16_di_not_rom
+    
+    ldr     r1, [r9]                @ ROM_DATA
+    ldrh    r1, [r1, r0]
+    rev16   r1, r1
+    b       .Lcmp_16_di_compare
+    
+.Lcmp_16_di_not_rom:
+    movw    r2, #0
+    movt    r2, #0xFF
+    cmp     r0, r2
+    blo     .Lcmp_16_di_slow
+    
+    ldr     r2, =M68K_RAM
+    movw    r3, #0xFFFF
+    and     r0, r0, r3
+    ldrh    r1, [r2, r0]
+    rev16   r1, r1
+    b       .Lcmp_16_di_compare
+    
+.Lcmp_16_di_slow:
+    str     r4, [r5, #M68K_CYCLES]
+    push    {r11}
+    bl      m68k_read_memory_16
+    pop     {r11}
+    mov     r1, r0
+    ldr     r4, [r5, #M68K_CYCLES]
+    
+.Lcmp_16_di_compare:
+    lsl     r0, r11, #2
+    add     r2, r5, #M68K_DAR
+    ldr     r3, [r2, r0]
+    uxth    r3, r3                  @ Get dest low word
+    uxth    r1, r1
+    
+    /* Compare using shift for 16-bit flags */
+    lsl     r3, r3, #16
+    lsl     r1, r1, #16
+    subs    r11, r3, r1
+    lsr     r11, r11, #16
+    
+    lsr     r0, r11, #8
+    and     r0, r0, #0x80
+    str     r0, [r5, #M68K_N_FLAG]
+    str     r11, [r5, #M68K_NOT_Z_FLAG]
+    
+    mrs     r0, APSR
+    ubfx    r1, r0, #28, #1
+    lsl     r1, r1, #7
+    str     r1, [r5, #M68K_V_FLAG]
+    
+    ubfx    r1, r0, #29, #1
+    eor     r1, r1, #1
+    lsl     r1, r1, #8
+    str     r1, [r5, #M68K_C_FLAG]
+    
+    add     r4, r4, #84             @ 12 * 7 cycles
+    b       .Lmain_loop
+
+.ltorg
 
 /*
  * CMP.W Dn,Dn - Compare Data Registers (Word)

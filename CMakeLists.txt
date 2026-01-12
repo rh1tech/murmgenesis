@@ -85,9 +85,7 @@ set(GWENESIS_SOURCES
     # CPUs
     src/cpus/M68K/m68kcpu.c
     src/cpus/M68K/m68k_memory_opt.S
-    src/cpus/M68K/m68k_core_opt.S
-    # Assembly instruction handlers disabled (256KB jump table doesn't fit in RAM)
-    # src/cpus/M68K/m68k_ops_opt.S
+    # M68K core uses C (m68k_core_opt.S disabled)
     src/cpus/Z80/Z80.c
     src/cpus/Z80/z80_arm.S
     # IO

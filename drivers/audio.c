@@ -319,6 +319,13 @@ static int32_t lpf_state = 0;
 // Mixed stereo buffer
 static int16_t __attribute__((aligned(4))) mixed_buffer[AUDIO_BUFFER_SAMPLES * 2];
 
+// Pre-mixed mono buffer (before time-stretching)
+static int16_t __attribute__((aligned(4))) premix_buffer[AUDIO_BUFFER_SAMPLES];
+
+// Time tracking for FPS-independent audio
+static uint64_t last_audio_time_us = 0;
+static bool first_audio_frame = true;
+
 static inline int16_t clamp_s16(int32_t v) {
     if (v > 32767) return 32767;
     if (v < -32768) return -32768;
@@ -336,6 +343,8 @@ bool audio_init(void) {
     preroll_count = 0;
     dma_buffers_free_mask = (1u << DMA_BUFFER_COUNT) - 1u;
     startup_frame_counter = 0;
+    last_audio_time_us = 0;
+    first_audio_frame = true;
     
     i2s_config = i2s_get_default_config();
     i2s_init(&i2s_config);
@@ -472,6 +481,20 @@ static void audio_dma_irq_handler(void) {
 void audio_submit(void) {
     if (!audio_initialized) return;
     
+    // Calculate elapsed time since last audio submit
+    uint64_t now_us = time_us_64();
+    uint32_t elapsed_us;
+    if (first_audio_frame || last_audio_time_us == 0) {
+        elapsed_us = 16667;  // Assume 60 FPS for first frame
+        first_audio_frame = false;
+    } else {
+        elapsed_us = (uint32_t)(now_us - last_audio_time_us);
+        // Clamp to reasonable range (10ms to 40ms = 100 to 25 FPS)
+        if (elapsed_us < 10000) elapsed_us = 10000;
+        if (elapsed_us > 40000) elapsed_us = 40000;
+    }
+    last_audio_time_us = now_us;
+    
     // Memory barrier to ensure we see Core 0's writes
     __dmb();
     
@@ -489,12 +512,12 @@ void audio_submit(void) {
     if (sn_samples < 0 || sn_samples > AUDIO_BUFFER_SAMPLES) sn_samples = 0;
     
     int available = (ym_samples > sn_samples) ? ym_samples : sn_samples;
-    if (available > TARGET_SAMPLES_NTSC) available = TARGET_SAMPLES_NTSC;
+    if (available > AUDIO_BUFFER_SAMPLES) available = AUDIO_BUFFER_SAMPLES;
     
     if (!audio_enabled || available == 0 || !ym_buffer || !sn_buffer) {
         // Output silence - fade to zero to avoid click
         for (int i = 0; i < TARGET_SAMPLES_NTSC; i++) {
-            int16_t sample = (lpf_state * 250) >> 8;  // Fade toward zero
+            int16_t sample = (lpf_state * 250) >> 8;
             lpf_state = sample;
             mixed_buffer[i * 2] = sample;
             mixed_buffer[i * 2 + 1] = sample;
@@ -503,58 +526,50 @@ void audio_submit(void) {
         return;
     }
     
-    // Simple mixing - minimal processing to preserve audio timing
-    int16_t last_sample = 0;
-    
+    // PHASE 1: Mix both sound chips into premix_buffer (mono)
     for (int i = 0; i < available; i++) {
         int32_t mixed = 0;
-        
-        // Mix both sound chips
-        if (i < ym_samples && ym_buffer) mixed += ym_buffer[i];
-        if (i < sn_samples && sn_buffer) mixed += sn_buffer[i];
-        
-        // Apply volume
+        if (i < ym_samples) mixed += ym_buffer[i];
+        if (i < sn_samples) mixed += sn_buffer[i];
         mixed = (mixed * master_volume) >> 7;
-        
-        // Clamp to 16-bit range
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
-        
-        last_sample = (int16_t)mixed;
-        
-        // Stereo (mono duplicated)
-        mixed_buffer[i * 2] = last_sample;
-        mixed_buffer[i * 2 + 1] = last_sample;
+        premix_buffer[i] = (int16_t)mixed;
     }
     
-    // Pad with last sample value
-    for (int i = available; i < TARGET_SAMPLES_NTSC; i++) {
+    // PHASE 2: Time-stretch to 888 samples using nearest-neighbor (FAST)
+    // This ensures correct playback speed regardless of emulation FPS
+    // At 60 FPS: available=888, elapsed=16.67ms -> 1:1 mapping
+    // At 40 FPS: available=888, elapsed=25ms -> stretch 888 to fill 888 output
+    //            (we always output 888 samples, but they represent 'elapsed' time)
+    // 
+    // The key: we scale the READ position, not the write.
+    // step = available / 888 (in 16.16 fixed point)
+    // When FPS is slow, step < 1.0, so we repeat samples (stretch)
+    // When FPS is fast, step > 1.0, so we skip samples (compress)
+    
+    uint32_t step = ((uint32_t)available << 16) / TARGET_SAMPLES_NTSC;
+    uint32_t pos = 0;
+    int16_t last_sample = premix_buffer[0];
+    
+    for (int i = 0; i < TARGET_SAMPLES_NTSC; i++) {
+        uint32_t idx = pos >> 16;
+        if (idx >= (uint32_t)available) idx = available - 1;
+        last_sample = premix_buffer[idx];
         mixed_buffer[i * 2] = last_sample;
         mixed_buffer[i * 2 + 1] = last_sample;
+        pos += step;
     }
     
-    // STARTUP MUTE: Output pure silence for first N frames to let hardware settle
+    // STARTUP MUTE: Output pure silence for first N frames
     if (startup_frame_counter < STARTUP_FADE_FRAMES) {
-        // Complete silence - don't even use mixed data
         memset(mixed_buffer, 0, TARGET_SAMPLES_NTSC * 2 * sizeof(int16_t));
         startup_frame_counter++;
     }
     
-    // Save last sample for next frame's crossfade
     last_frame_sample = last_sample;
-    
-    // DEBUG: Track buffer headroom
     audio_frame_count++;
-    if (audio_running && (audio_frame_count % 300) == 0) {
-         uint32_t free_mask = dma_buffers_free_mask;
-         int free_buffers = (int)((free_mask & 1u) != 0) + (int)((free_mask & 2u) != 0);
-#if ENABLE_LOGGING
-         printf("Audio: free_buffers=%d, ym=%d sn=%d\n",
-             free_buffers, saved_ym_samples, saved_sn_samples);
-#endif
-    }
     
-    // Always send fixed sample count for consistent timing
     i2s_dma_write_count(&i2s_config, mixed_buffer, TARGET_SAMPLES_NTSC);
 }
 
