@@ -19,6 +19,7 @@
     07/08/04  bzhxx few simplication for gwenesis to fit on MCU
 */
 
+#pragma GCC optimize("Ofast")
 
 #include <string.h>
 #include <stdlib.h>
@@ -146,78 +147,137 @@ int gwenesis_SN76489_GetContextSize(void)
 }
 static inline void gwenesis_SN76489_Update(INT16 *buffer, int length)
 {
-    int i, j;
+    int j;
+    
+    /* Cache frequently accessed struct fields in local variables */
+    float clock = gwenesis_SN76489.Clock;
+    const float dClock = gwenesis_SN76489.dClock;
+    int toneFreqVals0 = gwenesis_SN76489.ToneFreqVals[0];
+    int toneFreqVals1 = gwenesis_SN76489.ToneFreqVals[1];
+    int toneFreqVals2 = gwenesis_SN76489.ToneFreqVals[2];
+    int toneFreqVals3 = gwenesis_SN76489.ToneFreqVals[3];
+    int toneFreqPos0 = gwenesis_SN76489.ToneFreqPos[0];
+    int toneFreqPos1 = gwenesis_SN76489.ToneFreqPos[1];
+    int toneFreqPos2 = gwenesis_SN76489.ToneFreqPos[2];
+    int toneFreqPos3 = gwenesis_SN76489.ToneFreqPos[3];
+    long intermediatePos0 = gwenesis_SN76489.IntermediatePos[0];
+    long intermediatePos1 = gwenesis_SN76489.IntermediatePos[1];
+    long intermediatePos2 = gwenesis_SN76489.IntermediatePos[2];
+    int noiseShiftRegister = gwenesis_SN76489.NoiseShiftRegister;
+    const int noiseFreq = gwenesis_SN76489.NoiseFreq;
+    const int noiseShiftWidth = gwenesis_SN76489.noiseShiftWidth;
+    const int noiseBitMask = gwenesis_SN76489.noiseBitMask;
+    const int reg0 = gwenesis_SN76489.Registers[0];
+    const int reg2 = gwenesis_SN76489.Registers[2];
+    const int reg4 = gwenesis_SN76489.Registers[4];
+    const int reg6 = gwenesis_SN76489.Registers[6];
+    const int vol0 = PSGVolumeValues[gwenesis_SN76489.Registers[1]];
+    const int vol1 = PSGVolumeValues[gwenesis_SN76489.Registers[3]];
+    const int vol2 = PSGVolumeValues[gwenesis_SN76489.Registers[5]];
+    const int vol3 = PSGVolumeValues[gwenesis_SN76489.Registers[7]];
 
     for(j = 0; j < length; j++)
     {
-        for (i=0;i<=2;++i)
-            if (gwenesis_SN76489.IntermediatePos[i]!=LONG_MIN)
-                gwenesis_SN76489.Channels[i]=PSGVolumeValues[gwenesis_SN76489.Registers[2*i+1]]*gwenesis_SN76489.IntermediatePos[i]/65536;
-            else
-                gwenesis_SN76489.Channels[i]=PSGVolumeValues[gwenesis_SN76489.Registers[2*i+1]]*gwenesis_SN76489.ToneFreqPos[i];
+        /* Calculate channel outputs - unrolled for performance */
+        int ch0 = (intermediatePos0 != LONG_MIN) ? vol0 * intermediatePos0 / 65536 : vol0 * toneFreqPos0;
+        int ch1 = (intermediatePos1 != LONG_MIN) ? vol1 * intermediatePos1 / 65536 : vol1 * toneFreqPos1;
+        int ch2 = (intermediatePos2 != LONG_MIN) ? vol2 * intermediatePos2 / 65536 : vol2 * toneFreqPos2;
+        int ch3 = (vol3 * (noiseShiftRegister & 0x1)) << 1;
 
-        gwenesis_SN76489.Channels[3]=(short)(PSGVolumeValues[gwenesis_SN76489.Registers[7]]*(gwenesis_SN76489.NoiseShiftRegister & 0x1));
+        buffer[j] = (INT16)(ch0 + ch1 + ch2 + ch3);
 
-        gwenesis_SN76489.Channels[3]<<=1; /* Double noise volume to make some people happy */
+        clock += dClock;
+        int numClocks = (int)clock;
+        clock -= numClocks;
 
-        buffer[j] = (gwenesis_SN76489.Channels[0]);
-        buffer[j] += (gwenesis_SN76489.Channels[1]);
-        buffer[j] += (gwenesis_SN76489.Channels[2]);
-        buffer[j] += (gwenesis_SN76489.Channels[3]);
-
-        gwenesis_SN76489.Clock+=gwenesis_SN76489.dClock;
-        gwenesis_SN76489.NumClocksForSample=(int)gwenesis_SN76489.Clock;  /* truncates */
-        gwenesis_SN76489.Clock-=gwenesis_SN76489.NumClocksForSample;  /* remove integer part */
-
-        /* Decrement tone channel counters */
-        for (i=0;i<=2;++i)
-            gwenesis_SN76489.ToneFreqVals[i]-=gwenesis_SN76489.NumClocksForSample;
+        /* Decrement tone channel counters - unrolled */
+        toneFreqVals0 -= numClocks;
+        toneFreqVals1 -= numClocks;
+        toneFreqVals2 -= numClocks;
 
         /* Noise channel: match to tone2 or decrement its counter */
-        if (gwenesis_SN76489.NoiseFreq==0x80) gwenesis_SN76489.ToneFreqVals[3]=gwenesis_SN76489.ToneFreqVals[2];
-        else gwenesis_SN76489.ToneFreqVals[3]-=gwenesis_SN76489.NumClocksForSample;
+        if (noiseFreq == 0x80) 
+            toneFreqVals3 = toneFreqVals2;
+        else 
+            toneFreqVals3 -= numClocks;
 
-        /* Tone channels: */
-        for (i=0;i<=2;++i) {
-            if (gwenesis_SN76489.ToneFreqVals[i]<=0) {   /* If it gets below 0... */
-                if (gwenesis_SN76489.Registers[i*2]>PSG_CUTOFF) {
-                    /* Calculate how much of the sample is + and how much is - */
-                    /* Go to floating point and include the clock fraction for extreme accuracy :D */
-                    /* Store as long int, maybe it's faster? I'm not very good at this */
-                    gwenesis_SN76489.IntermediatePos[i]=(long)((gwenesis_SN76489.NumClocksForSample-gwenesis_SN76489.Clock+2*gwenesis_SN76489.ToneFreqVals[i])*gwenesis_SN76489.ToneFreqPos[i]/(gwenesis_SN76489.NumClocksForSample+gwenesis_SN76489.Clock)*65536);
-                    gwenesis_SN76489.ToneFreqPos[i]=-gwenesis_SN76489.ToneFreqPos[i]; /* Flip the flip-flop */
-                } else {
-                    gwenesis_SN76489.ToneFreqPos[i]=1;   /* stuck value */
-                    gwenesis_SN76489.IntermediatePos[i]=LONG_MIN;
-                }
-                gwenesis_SN76489.ToneFreqVals[i]+=gwenesis_SN76489.Registers[i*2]*(gwenesis_SN76489.NumClocksForSample/gwenesis_SN76489.Registers[i*2]+1);
-            } else gwenesis_SN76489.IntermediatePos[i]=LONG_MIN;
+        /* Tone channel 0 */
+        if (toneFreqVals0 <= 0) {
+            if (reg0 > PSG_CUTOFF) {
+                intermediatePos0 = (long)((numClocks - clock + 2 * toneFreqVals0) * toneFreqPos0 / (numClocks + clock) * 65536);
+                toneFreqPos0 = -toneFreqPos0;
+            } else {
+                toneFreqPos0 = 1;
+                intermediatePos0 = LONG_MIN;
+            }
+            toneFreqVals0 += reg0 * (numClocks / reg0 + 1);
+        } else {
+            intermediatePos0 = LONG_MIN;
+        }
+
+        /* Tone channel 1 */
+        if (toneFreqVals1 <= 0) {
+            if (reg2 > PSG_CUTOFF) {
+                intermediatePos1 = (long)((numClocks - clock + 2 * toneFreqVals1) * toneFreqPos1 / (numClocks + clock) * 65536);
+                toneFreqPos1 = -toneFreqPos1;
+            } else {
+                toneFreqPos1 = 1;
+                intermediatePos1 = LONG_MIN;
+            }
+            toneFreqVals1 += reg2 * (numClocks / reg2 + 1);
+        } else {
+            intermediatePos1 = LONG_MIN;
+        }
+
+        /* Tone channel 2 */
+        if (toneFreqVals2 <= 0) {
+            if (reg4 > PSG_CUTOFF) {
+                intermediatePos2 = (long)((numClocks - clock + 2 * toneFreqVals2) * toneFreqPos2 / (numClocks + clock) * 65536);
+                toneFreqPos2 = -toneFreqPos2;
+            } else {
+                toneFreqPos2 = 1;
+                intermediatePos2 = LONG_MIN;
+            }
+            toneFreqVals2 += reg4 * (numClocks / reg4 + 1);
+        } else {
+            intermediatePos2 = LONG_MIN;
         }
 
         /* Noise channel (with Genesis Plus GX improvements) */
-        if (gwenesis_SN76489.ToneFreqVals[3]<=0) {   /* If it gets below 0... */
-            gwenesis_SN76489.ToneFreqPos[3]=-gwenesis_SN76489.ToneFreqPos[3]; /* Flip the flip-flop */
-            if (gwenesis_SN76489.NoiseFreq!=0x80)            /* If not matching tone2, decrement counter */
-                gwenesis_SN76489.ToneFreqVals[3]+=gwenesis_SN76489.NoiseFreq*(gwenesis_SN76489.NumClocksForSample/gwenesis_SN76489.NoiseFreq+1);
+        if (toneFreqVals3 <= 0) {
+            toneFreqPos3 = -toneFreqPos3;
+            if (noiseFreq != 0x80)
+                toneFreqVals3 += noiseFreq * (numClocks / noiseFreq + 1);
             
-            /* Noise register is shifted on positive edge only (from Genesis Plus GX) */
-            if (gwenesis_SN76489.ToneFreqPos[3]==1) {
-                int shiftOutput = gwenesis_SN76489.NoiseShiftRegister & 0x01;
+            /* Noise register is shifted on positive edge only */
+            if (toneFreqPos3 == 1) {
+                int shiftOutput = noiseShiftRegister & 0x01;
                 
-                if (gwenesis_SN76489.Registers[6]&0x4) { /* White noise */
-                    /* Use XOR feedback lookup table (from Genesis Plus GX) */
-                    int feedbackBits = gwenesis_SN76489.NoiseShiftRegister & gwenesis_SN76489.noiseBitMask;
+                if (reg6 & 0x4) { /* White noise */
+                    int feedbackBits = noiseShiftRegister & noiseBitMask;
                     int feedback = noiseFeedback[feedbackBits];
-                    gwenesis_SN76489.NoiseShiftRegister = (gwenesis_SN76489.NoiseShiftRegister >> 1) | 
-                        (feedback << gwenesis_SN76489.noiseShiftWidth);
+                    noiseShiftRegister = (noiseShiftRegister >> 1) | (feedback << noiseShiftWidth);
                 } else {  /* Periodic noise */
-                    /* Shift and feedback current output */
-                    gwenesis_SN76489.NoiseShiftRegister = (gwenesis_SN76489.NoiseShiftRegister >> 1) | 
-                        (shiftOutput << gwenesis_SN76489.noiseShiftWidth);
+                    noiseShiftRegister = (noiseShiftRegister >> 1) | (shiftOutput << noiseShiftWidth);
                 }
             }
         }
     }
+    
+    /* Write back cached values to struct */
+    gwenesis_SN76489.Clock = clock;
+    gwenesis_SN76489.ToneFreqVals[0] = toneFreqVals0;
+    gwenesis_SN76489.ToneFreqVals[1] = toneFreqVals1;
+    gwenesis_SN76489.ToneFreqVals[2] = toneFreqVals2;
+    gwenesis_SN76489.ToneFreqVals[3] = toneFreqVals3;
+    gwenesis_SN76489.ToneFreqPos[0] = toneFreqPos0;
+    gwenesis_SN76489.ToneFreqPos[1] = toneFreqPos1;
+    gwenesis_SN76489.ToneFreqPos[2] = toneFreqPos2;
+    gwenesis_SN76489.ToneFreqPos[3] = toneFreqPos3;
+    gwenesis_SN76489.IntermediatePos[0] = intermediatePos0;
+    gwenesis_SN76489.IntermediatePos[1] = intermediatePos1;
+    gwenesis_SN76489.IntermediatePos[2] = intermediatePos2;
+    gwenesis_SN76489.NoiseShiftRegister = noiseShiftRegister;
 }
 /* SN76589 execution */
 extern int scan_line;

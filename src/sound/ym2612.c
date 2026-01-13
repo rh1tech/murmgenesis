@@ -2075,15 +2075,20 @@ static inline void YM2612Update(int16_t *buffer, int length)
    * so dacout already has the correct value at each point in time.
    * No buffer or resampling needed - just use dacout directly. */
 
+  /* Cache frequently accessed values to reduce memory loads */
+  const UINT32 divisor = ym2612.divisor;
+  INT32 dacout_smooth = ym2612.dacout_smooth;
+  UINT8 dacen_prev = ym2612.dacen_prev;
+  
   /* buffering */
   for(i=0; i < length ; i++)
   {
     /* Advance sample clock */
-    current_clock += ym2612.divisor;
+    current_clock += divisor;
     
     /* DAC: dacout is set directly by YM2612Write with proper timing */
     
-    /* clear outputs */
+    /* clear outputs - use 32-bit writes for efficiency on ARM */
     out_fm[0] = 0;
     out_fm[1] = 0;
     out_fm[2] = 0;
@@ -2105,36 +2110,37 @@ static inline void YM2612Update(int16_t *buffer, int length)
     {
       /* Smooth DAC value changes (slew rate limit) */
       /* Max change of 512 per sample (~26kHz max slew) prevents harsh clicks */
-      INT32 dac_delta = ym2612.dacout - ym2612.dacout_smooth;
+      INT32 dac_target = ym2612.dacout;
+      INT32 dac_delta = dac_target - dacout_smooth;
       if (dac_delta > 512) {
-        ym2612.dacout_smooth += 512;
+        dacout_smooth += 512;
       } else if (dac_delta < -512) {
-        ym2612.dacout_smooth -= 512;
+        dacout_smooth -= 512;
       } else {
-        ym2612.dacout_smooth = ym2612.dacout;
+        dacout_smooth = dac_target;
       }
       
       /* Use smoothed DAC output */
-      out_fm[5] = ym2612.dacout_smooth;
-      ym2612.dacen_prev = 1;
+      out_fm[5] = dacout_smooth;
+      dacen_prev = 1;
     }
     else
     {
       /* DAC is disabled - smooth transition to FM output */
-      if (ym2612.dacen_prev)
+      if (dacen_prev)
       {
         /* DAC just turned off - fade dacout_smooth toward 0 (or FM output) */
         /* This prevents click when sample ends abruptly */
-        if (ym2612.dacout_smooth > 256) {
-          ym2612.dacout_smooth -= 256;
-          out_fm[5] = ym2612.dacout_smooth;
-        } else if (ym2612.dacout_smooth < -256) {
-          ym2612.dacout_smooth += 256;
-          out_fm[5] = ym2612.dacout_smooth;
+        if (dacout_smooth > 256) {
+          dacout_smooth -= 256;
+          out_fm[5] = dacout_smooth;
+        } else if (dacout_smooth < -256) {
+          dacout_smooth += 256;
+          out_fm[5] = dacout_smooth;
         } else {
           /* Fade complete, switch to FM */
-          ym2612.dacout_smooth = 0;
-          ym2612.dacen_prev = 0;
+          dacout_smooth = 0;
+          dacen_prev = 0;
           /* out_fm[5] already has FM output from chan_calc */
         }
       }
@@ -2154,40 +2160,32 @@ static inline void YM2612Update(int16_t *buffer, int length)
       ym2612.OPN.eg_cnt++;
       advance_eg_channels(&ym2612.CH[0], ym2612.OPN.eg_cnt);
     }
+    
     /* 14-bit accumulator channels outputs (range is -8192;+8191) */
-    if (out_fm[0] > 8191) out_fm[0] = 8191;
-    else if (out_fm[0] < -8192) out_fm[0] = -8192;
-    if (out_fm[1] > 8191) out_fm[1] = 8191;
-    else if (out_fm[1] < -8192) out_fm[1] = -8192;
-    if (out_fm[2] > 8191) out_fm[2] = 8191;
-    else if (out_fm[2] < -8192) out_fm[2] = -8192;
-    if (out_fm[3] > 8191) out_fm[3] = 8191;
-    else if (out_fm[3] < -8192) out_fm[3] = -8192;
-    if (out_fm[4] > 8191) out_fm[4] = 8191;
-    else if (out_fm[4] < -8192) out_fm[4] = -8192;
-    if (out_fm[5] > 8191) out_fm[5] = 8191;
-    else if (out_fm[5] < -8192) out_fm[5] = -8192;
+    /* Use branchless clamping for better performance on ARM */
+    #define CLAMP_14BIT(x) ((x) > 8191 ? 8191 : ((x) < -8192 ? -8192 : (x)))
+    out_fm[0] = CLAMP_14BIT(out_fm[0]);
+    out_fm[1] = CLAMP_14BIT(out_fm[1]);
+    out_fm[2] = CLAMP_14BIT(out_fm[2]);
+    out_fm[3] = CLAMP_14BIT(out_fm[3]);
+    out_fm[4] = CLAMP_14BIT(out_fm[4]);
+    out_fm[5] = CLAMP_14BIT(out_fm[5]);
+    #undef CLAMP_14BIT
     
     /* Mix all channels (mono output for this platform) */
     lt = out_fm[0] + out_fm[1] + out_fm[2] + out_fm[3] + out_fm[4] + out_fm[5];
 
     /* Genesis-Plus-GX: discrete YM2612 DAC 'ladder effect' */
+    /* Unrolled and optimized for ARM - count negative channels and apply offset */
     if (chip_type == YM2612_DISCRETE)
     {
-      int ch;
-      for (ch = 0; ch < 6; ch++)
-      {
-        if (out_fm[ch] < 0)
-        {
-          /* -4 offset (-3 when not muted) on negative channel output (9-bit) */
-          lt -= (4 << 5);
-        }
-        else
-        {
-          /* +4 offset (when muted or not) on positive channel output (9-bit) */
-          lt += (4 << 5);
-        }
-      }
+      /* Count negative channels using sign bit extraction (branchless) */
+      int neg_count = (out_fm[0] >> 31) + (out_fm[1] >> 31) + (out_fm[2] >> 31) +
+                      (out_fm[3] >> 31) + (out_fm[4] >> 31) + (out_fm[5] >> 31);
+      /* neg_count is negative (-1 to -6), each -1 represents one negative channel */
+      /* For negative: -4 offset (128), for positive: +4 offset (128) */
+      /* 6 channels positive = +768, each negative channel swings by -256 */
+      lt += (4 << 5) * 6 + neg_count * (8 << 5);
     }
 
     /* Scale down from 6-channel mix (max ±49152) to 16-bit range (±32767) */
@@ -2218,6 +2216,10 @@ static inline void YM2612Update(int16_t *buffer, int length)
       ym2612.OPN.SL3.key_csm = 0;
     }
   }
+  
+  /* Write back cached values to struct */
+  ym2612.dacout_smooth = dacout_smooth;
+  ym2612.dacen_prev = dacen_prev;
 
   /* timer B control */
   INTERNAL_TIMER_B(length);

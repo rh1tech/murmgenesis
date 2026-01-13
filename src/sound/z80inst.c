@@ -35,9 +35,8 @@ __license__ = "GPLv3"
 #include "z80_arm.h"
 #endif
 
-#if GNW_TARGET_MARIO !=0 || GNW_TARGET_ZELDA!=0
-  #pragma GCC optimize("Ofast")
-#endif
+/* Always optimize Z80 functions for speed - critical path */
+#pragma GCC optimize("Ofast")
 
 static volatile int bus_ack = 0;
 static volatile int reset = 0;

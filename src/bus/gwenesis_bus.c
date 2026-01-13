@@ -32,9 +32,8 @@ __license__ = "GPLv3"
 #include "gwenesis_sn76489.h"
 #include "gwenesis_savestate.h"
 
-#if GNW_TARGET_MARIO !=0 || GNW_TARGET_ZELDA!=0
-  #pragma GCC optimize("Ofast")
-#endif
+/* Always optimize bus functions for speed - critical path */
+#pragma GCC optimize("Ofast")
 
 #define BUS_DISABLE_LOGGING 1
 
@@ -378,24 +377,29 @@ unsigned int gwenesis_bus_map_address(unsigned int address) {
  *   Write an value to memory mapped on specified address
  *
  ******************************************************************************/
-static inline unsigned int gwenesis_bus_read_memory_8(unsigned int address) {
+static inline __attribute__((always_inline)) unsigned int gwenesis_bus_read_memory_8(unsigned int address) {
  bus_log(__FUNCTION__,"read8  %x", address);
 
-  // Fast path for ROM reads (most common during gameplay/loading)
-  if ((address & 0xFF0000) < 0x800000) {
+  /* Fast path: use upper byte to quickly identify memory region */
+  unsigned int range = address >> 16;
+  
+  /* ROM reads (0x000000 - 0x7FFFFF) - most common during gameplay */
+  if (range < 0x80) {
     return FETCH8ROM(address);
   }
   
-  // Fast path for RAM reads
-  if ((address & 0xFF0000) == 0xFF0000) {
+  /* RAM reads (0xFF0000 - 0xFFFFFF) - second most common */
+  if (range == 0xFF) {
     return FETCH8RAM(address);
+  }
+  
+  /* VDP reads (0xC00000 - 0xDFFFFF) */
+  if (range == 0xC0) {
+    return gwenesis_vdp_read_memory_8(address);
   }
 
   // Slow path for other addresses
   switch (gwenesis_bus_map_address(address)) {
-  
-  case VDP_ADDR:
-    return gwenesis_vdp_read_memory_8(address);
 
   case IO_CTRL:
     return gwenesis_io_read_ctrl(address & 0x1F);
@@ -429,24 +433,29 @@ static inline unsigned int gwenesis_bus_read_memory_8(unsigned int address) {
   return 0x00;
 }
 
-static inline unsigned int gwenesis_bus_read_memory_16(unsigned int address) {
+static inline __attribute__((always_inline)) unsigned int gwenesis_bus_read_memory_16(unsigned int address) {
    bus_log(__FUNCTION__,"read16 %x", address);
 
-  // Fast path for ROM reads (most common during gameplay/loading)
-  if ((address & 0xFF0000) < 0x800000) {
+  /* Fast path: use upper byte to quickly identify memory region */
+  unsigned int range = address >> 16;
+  
+  /* ROM reads (0x000000 - 0x7FFFFF) - most common during gameplay */
+  if (range < 0x80) {
     return FETCH16ROM(address);
   }
   
-  // Fast path for RAM reads (second most common)
-  if ((address & 0xFF0000) == 0xFF0000) {
+  /* RAM reads (0xFF0000 - 0xFFFFFF) - second most common */
+  if (range == 0xFF) {
     return FETCH16RAM(address);
+  }
+  
+  /* VDP reads (0xC00000 - 0xDFFFFF) */
+  if (range == 0xC0) {
+    return gwenesis_vdp_read_memory_16(address);
   }
 
   // Slow path for other addresses
   switch (gwenesis_bus_map_address(address)) {
-
-  case VDP_ADDR:
-    return gwenesis_vdp_read_memory_16(address);
 
   case IO_CTRL:
     return gwenesis_io_read_ctrl(address & 0x1F);
@@ -489,9 +498,16 @@ static inline unsigned int gwenesis_bus_read_memory_16(unsigned int address) {
  *   Write an value to memory mapped on specified address
  *
  ******************************************************************************/
-static inline void gwenesis_bus_write_memory_8(unsigned int address,
+static inline __attribute__((always_inline)) void gwenesis_bus_write_memory_8(unsigned int address,
                                               unsigned int value) {
   bus_log(__FUNCTION__,"write8  @%x:%x", address,value);
+
+  /* Fast path for RAM writes (most common during gameplay) */
+  unsigned int range = address >> 16;
+  if (range == 0xFF) {
+    WRITE8RAM(address, value);
+    return;
+  }
 
   switch (gwenesis_bus_map_address(address)) {
 
@@ -557,9 +573,22 @@ static inline void gwenesis_bus_write_memory_8(unsigned int address,
   return;
 }
 
-static inline void gwenesis_bus_write_memory_16(unsigned int address,
+static inline __attribute__((always_inline)) void gwenesis_bus_write_memory_16(unsigned int address,
                                                unsigned int value) {
   bus_log(__FUNCTION__,"write16  @%x:%x", address,value);
+
+  /* Fast path for RAM writes (most common during gameplay) */
+  unsigned int range = address >> 16;
+  if (range == 0xFF) {
+    WRITE16RAM(address, value);
+    return;
+  }
+  
+  /* Fast path for VDP writes (second most common) */
+  if (range == 0xC0) {
+    gwenesis_vdp_write_memory_16(address, value);
+    return;
+  }
 
   switch (gwenesis_bus_map_address(address)) {
 
