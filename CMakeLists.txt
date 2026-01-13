@@ -17,6 +17,9 @@ set(PSRAM_SPEED "100" CACHE STRING "PSRAM max frequency in MHz: 84, 100, 133, 16
 # some PCM-heavy drivers.
 set(Z80_SLICE_LINES "16" CACHE STRING "Run Z80 every N scanlines (default 16)")
 
+# M68K CPU selection: OLD = original with ASM opts, GPX = Genesis-Plus-GX pure C
+set(M68K_CORE "OLD" CACHE STRING "M68K core: OLD (asm optimized) or GPX (Genesis-Plus-GX)")
+
 # CPU voltage selection based on speed
 if(CPU_SPEED GREATER_EQUAL 504)
     set(CPU_VOLTAGE "VREG_VOLTAGE_1_65")
@@ -82,10 +85,7 @@ target_link_libraries(drivers pico_stdlib hardware_dma hardware_pio hardware_spi
 set(GWENESIS_SOURCES
     # Bus
     src/bus/gwenesis_bus.c
-    # CPUs
-    src/cpus/M68K/m68kcpu.c
-    src/cpus/M68K/m68k_memory_opt.S
-    # M68K core uses C (m68k_core_opt.S disabled)
+    # CPUs - Z80
     src/cpus/Z80/Z80.c
     src/cpus/Z80/z80_arm.S
     # IO
@@ -106,8 +106,22 @@ set(GWENESIS_SOURCES
     src/savestate/gwenesis_savestate.c
 )
 
+# Select M68K core based on configuration
+if(M68K_CORE STREQUAL "GPX")
+    message(STATUS "Using Genesis-Plus-GX M68K core (pure C)")
+    list(APPEND GWENESIS_SOURCES src/cpus/M68K_GPX/m68kcpu.c)
+    set(M68K_INCLUDE_DIR src/cpus/M68K_GPX)
+else()
+    message(STATUS "Using original M68K core (with ASM optimizations)")
+    list(APPEND GWENESIS_SOURCES 
+        src/cpus/M68K/m68kcpu.c
+        src/cpus/M68K/m68k_memory_opt.S
+    )
+    set(M68K_INCLUDE_DIR src/cpus/M68K)
+endif()
+
 # Apply aggressive optimizations to M68K CPU
-set_source_files_properties(src/cpus/M68K/m68kcpu.c PROPERTIES
+set_source_files_properties(src/cpus/M68K/m68kcpu.c src/cpus/M68K_GPX/m68kcpu.c PROPERTIES
     COMPILE_FLAGS "-O3 -ffast-math -funroll-loops -finline-functions"
 )
 
@@ -120,7 +134,7 @@ add_executable(murmgenesis
 target_include_directories(murmgenesis PRIVATE
     src
     src/bus
-    src/cpus/M68K
+    ${M68K_INCLUDE_DIR}
     src/cpus/Z80
     src/io
     src/sound
@@ -143,6 +157,8 @@ target_compile_definitions(murmgenesis PRIVATE
     BUS_DISABLE_LOGGING=1
     VDP_GFX_DISABLE_LOGGING=1
     ENABLE_LOGGING=1
+    # M68K configuration (Genesis-Plus-GX)
+    LSB_FIRST=1
     # I2S Audio configuration - use PIO0 to avoid conflict with HDMI on PIO1
     PICO_AUDIO_I2S_PIO=0
     PICO_AUDIO_I2S_DMA_IRQ=1
