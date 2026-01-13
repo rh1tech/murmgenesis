@@ -25,7 +25,7 @@ enum graphics_mode_t hdmi_graphics_mode = GRAPHICSMODE_DEFAULT;
 
 // Brightness for dim scanlines (0-100, where 100 = same as bright)
 #ifndef CRT_DIM_PERCENT
-#define CRT_DIM_PERCENT 50
+#define CRT_DIM_PERCENT 30
 #endif
 
 // Graphics buffer pointer in scratch memory for fast DMA handler access

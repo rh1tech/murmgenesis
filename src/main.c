@@ -83,29 +83,29 @@
 // - Bit i (LSB=frame 0) indicates whether to render that frame (1) or skip (0)
 // Configurable via -DFRAMESKIP_LEVEL=N where:
 //   0 = render all frames (60 fps target)
-//   1 = render 5/6 frames (~50 fps) - DEFAULT
+//   1 = render 5/6 frames (~50 fps)
 //   2 = render 4/6 frames (~40 fps)
-//   3 = render 3/6 frames (~30 fps)
+//   3 = render 3/6 frames (~30 fps) - DEFAULT
 //   4 = render 2/6 frames (~20 fps)
 #ifndef FRAMESKIP_LEVEL
-#define FRAMESKIP_LEVEL 1
+#define FRAMESKIP_LEVEL 3
 #endif
 
 #if FRAMESKIP_LEVEL == 0
   #define FRAMESKIP_PATTERN_LEN 1u
   #define FRAMESKIP_PATTERN_MASK 0x01u  // render every frame
+#elif FRAMESKIP_LEVEL == 1
+  #define FRAMESKIP_PATTERN_LEN 6u
+  #define FRAMESKIP_PATTERN_MASK 0x1Fu  // 0b01_1111 : render frames 0-4, skip frame 5
 #elif FRAMESKIP_LEVEL == 2
   #define FRAMESKIP_PATTERN_LEN 6u
   #define FRAMESKIP_PATTERN_MASK 0x15u  // 0b01_0101 : render frames 0,2,4 (4/6)
-#elif FRAMESKIP_LEVEL == 3
-  #define FRAMESKIP_PATTERN_LEN 6u
-  #define FRAMESKIP_PATTERN_MASK 0x09u  // 0b00_1001 : render frames 0,3 (3/6 = 30fps)
 #elif FRAMESKIP_LEVEL == 4
   #define FRAMESKIP_PATTERN_LEN 6u
   #define FRAMESKIP_PATTERN_MASK 0x05u  // 0b00_0101 : render frames 0,2 (2/6 = 20fps)
-#else  // Default: FRAMESKIP_LEVEL == 1
+#else  // Default: FRAMESKIP_LEVEL == 3
   #define FRAMESKIP_PATTERN_LEN 6u
-  #define FRAMESKIP_PATTERN_MASK 0x1Fu  // 0b01_1111 : render frames 0-4, skip frame 5
+  #define FRAMESKIP_PATTERN_MASK 0x09u  // 0b00_1001 : render frames 0,3 (3/6 = 30fps)
 #endif
 #define FRAMESKIP_MAX_CONSECUTIVE 4
 #define FRAMESKIP_MAX_BACKLOG_FRAMES 8
