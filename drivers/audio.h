@@ -82,6 +82,9 @@ void audio_set_enabled(bool enabled);
 // Check if audio is enabled
 bool audio_is_enabled(void);
 
+// Flush silence to audio buffer to stop any repeating sound
+void audio_flush_silence(void);
+
 // Debug function
 void audio_debug_buffer_values(void);
 

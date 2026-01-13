@@ -59,6 +59,7 @@ uint32_t graphics_get_height(void);
 void graphics_set_res(int w, int h);
 void graphics_set_shift(int x, int y);
 void graphics_set_palette(uint8_t i, uint32_t color888);
+uint32_t graphics_get_palette(uint8_t i);
 void graphics_restore_sync_colors(void);
 void startVIDEO(uint8_t vol);
 void set_palette(uint8_t n); // переключение палитр
@@ -66,6 +67,10 @@ void set_palette(uint8_t n); // переключение палитр
 struct video_mode_t graphics_get_video_mode(int mode);
 void graphics_set_bgcolor(uint32_t color888);
 
+// Runtime CRT scanline effect control
+void graphics_set_crt_effect(bool enabled, uint8_t dim_percent);
+bool graphics_get_crt_enabled(void);
+uint8_t graphics_get_crt_dim(void);
 
 static const uint32_t tab_color[11][16] =
 {

@@ -9,7 +9,7 @@
 | B | B | |
 | A + B | C | Button combo required |
 | Start | Start | |
-| Select + Start | Reset | Return to ROM selector |
+| Select + Start | Settings | Opens settings menu |
 
 ## SNES Controller (6-button mode)
 
@@ -25,7 +25,7 @@ The emulator automatically detects SNES controllers and provides full 6-button s
 | L (shoulder) | A | Jump (alternate) | Left shoulder |
 | R (shoulder) | B | Primary action (alternate) | Right shoulder |
 | Start | Start | Pause/Menu | |
-| Select + Start | Reset | Return to ROM selector | |
+| Select + Start | Settings | Opens settings menu | |
 
 **Note:** The shoulder buttons (L/R) provide duplicate access to jump and primary action for comfortable one-handed gameplay or alternate control schemes.
 

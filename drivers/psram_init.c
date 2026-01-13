@@ -10,7 +10,8 @@
 #define PSRAM_MAX_FREQ_MHZ 133
 #endif
 
-void __no_inline_not_in_flash_func(psram_init)(uint cs_pin) {
+// Internal function that does the actual PSRAM initialization with a specified max frequency
+static void __no_inline_not_in_flash_func(psram_init_internal)(uint cs_pin, int max_psram_freq) {
     const int clock_hz = clock_get_hz(clk_sys); 
 
     gpio_set_function(cs_pin, GPIO_FUNC_XIP_CS1);
@@ -24,9 +25,6 @@ void __no_inline_not_in_flash_func(psram_init)(uint cs_pin) {
     qmi_hw->direct_tx = QMI_DIRECT_TX_NOPUSH_BITS | CMD_QPI_EN;
     while (qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS);
 
-
-    const int max_psram_freq = PSRAM_MAX_FREQ_MHZ * 1000000; 
-    
     int divisor = (clock_hz + max_psram_freq - 1) / max_psram_freq;
     if (divisor == 1 && clock_hz > 100000000) {
         divisor = 2;
@@ -75,4 +73,12 @@ void __no_inline_not_in_flash_func(psram_init)(uint cs_pin) {
     qmi_hw->direct_csr = 0;
     
     hw_set_bits(&xip_ctrl_hw->ctrl, XIP_CTRL_WRITABLE_M1_BITS);
+}
+
+void __no_inline_not_in_flash_func(psram_init)(uint cs_pin) {
+    psram_init_internal(cs_pin, PSRAM_MAX_FREQ_MHZ * 1000000);
+}
+
+void __no_inline_not_in_flash_func(psram_init_with_freq)(uint cs_pin, uint16_t max_freq_mhz) {
+    psram_init_internal(cs_pin, max_freq_mhz * 1000000);
 }

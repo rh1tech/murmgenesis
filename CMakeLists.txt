@@ -7,10 +7,10 @@ set(PICO_BOARD pico2 CACHE STRING "Pico board type")
 set(BOARD_VARIANT "M1" CACHE STRING "Board variant: M1 or M2")
 
 # CPU overclock configuration (252, 378, 504 MHz)
-set(CPU_SPEED "378" CACHE STRING "CPU clock in MHz: 252, 378, 504")
+set(CPU_SPEED "504" CACHE STRING "CPU clock in MHz: 252, 378, 504")
 
 # PSRAM speed configuration (84, 100, 133, 166 MHz target)
-set(PSRAM_SPEED "100" CACHE STRING "PSRAM max frequency in MHz: 84, 100, 133, 166")
+set(PSRAM_SPEED "166" CACHE STRING "PSRAM max frequency in MHz: 84, 100, 133, 166")
 
 # Z80 scheduling: run the Z80 core less often to reduce interpreter overhead.
 # Higher values generally improve performance but can reduce timing fidelity for
@@ -34,11 +34,11 @@ set(LINE_INTERLACE "0" CACHE STRING "Line interlacing: 0=off, 1=on")
 set(FRAMESKIP_LEVEL "3" CACHE STRING "Frameskip level: 0-4")
 
 # CRT scanline effect: dims every other scanline for retro look
-# 0 = off (default), 1 = on (creates CRT-like appearance, masks low FPS)
-set(CRT_SCANLINES "0" CACHE STRING "CRT scanlines: 0=off, 1=on")
+# 0 = off, 1 = on (default, creates CRT-like appearance, masks low FPS)
+set(CRT_SCANLINES "1" CACHE STRING "CRT scanlines: 0=off, 1=on")
 
 # CRT dim brightness percentage (only used if CRT_SCANLINES=1)
-set(CRT_DIM_PERCENT "30" CACHE STRING "CRT dim line brightness: 0-100")
+set(CRT_DIM_PERCENT "60" CACHE STRING "CRT dim line brightness: 0-100")
 
 # CPU voltage selection based on speed
 if(CPU_SPEED GREATER_EQUAL 504)
@@ -172,6 +172,7 @@ set_source_files_properties(src/cpus/Z80_GPX/z80_gpx.c PROPERTIES
 add_executable(murmgenesis
     src/main.c
     src/rom_selector.c
+    src/settings.c
     ${GWENESIS_SOURCES}
 )
 

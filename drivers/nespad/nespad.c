@@ -49,8 +49,10 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin, uint8_t lat
         pio_gpio_init(pio, dataPin);
         pio_gpio_init(pio, dataPin + 1); // +1 Pin for Joystick2
         pio_gpio_init(pio, latPin);
+        gpio_set_pulls(clkPin, true, false);      // Pull clock high
         gpio_set_pulls(dataPin, true, false);     // Pull data high, 0xFF if unplugged
         gpio_set_pulls(dataPin + 1, true, false); // Pull data high for Joystick2
+        gpio_set_pulls(latPin, true, false);      // Pull latch high
 
         pio_sm_set_pindirs_with_mask(pio, sm,
                                       (1 << clkPin) | (1 << latPin), // Outputs

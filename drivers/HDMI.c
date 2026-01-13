@@ -20,13 +20,30 @@ enum graphics_mode_t hdmi_graphics_mode = GRAPHICSMODE_DEFAULT;
 
 // CRT scanline effect: 0=off, 1=on (dims every other scanline)
 #ifndef CRT_SCANLINES
-#define CRT_SCANLINES 0
+#define CRT_SCANLINES 1
 #endif
 
 // Brightness for dim scanlines (0-100, where 100 = same as bright)
 #ifndef CRT_DIM_PERCENT
 #define CRT_DIM_PERCENT 30
 #endif
+
+// Runtime CRT settings (initialized from compile-time defaults)
+static bool crt_enabled = CRT_SCANLINES;
+static uint8_t crt_dim_percent = CRT_DIM_PERCENT;
+
+void graphics_set_crt_effect(bool enabled, uint8_t dim_percent) {
+    crt_enabled = enabled;
+    crt_dim_percent = dim_percent;
+}
+
+bool graphics_get_crt_enabled(void) {
+    return crt_enabled;
+}
+
+uint8_t graphics_get_crt_dim(void) {
+    return crt_dim_percent;
+}
 
 // Graphics buffer pointer in scratch memory for fast DMA handler access
 static uint8_t * __scratch_y("hdmi_ptr") graphics_buffer = NULL;
@@ -263,10 +280,8 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
     if (line < mode.h_width ) {
         uint8_t* output_buffer = activ_buf + 72; //для выравнивания синхры;
         int y = line >> 1;
-#if CRT_SCANLINES
         // For CRT effect: odd display lines use dim palette (indices 64-127)
-        uint8_t crt_offset = (y & 1) ? 64 : 0;
-#endif
+        uint8_t crt_offset = (crt_enabled && (y & 1)) ? 64 : 0;
         //область изображения
         uint8_t* input_buffer = get_line_buffer(y);
         if (!input_buffer) {
@@ -299,9 +314,7 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                         register uint8_t c = input_buffer[x++] & 0x3F;
                         // Substitute HDMI reserved colors with nearest matches
                         if (c >= 240 && c <= 243) c = color_substitute[c - 240];
-#if CRT_SCANLINES
-                        c |= crt_offset;  // Use dim palette for odd lines
-#endif
+                        c |= crt_offset;  // Use dim palette for odd lines if CRT enabled
                         *output_buffer++ = c;
                     }
                     else
@@ -314,9 +327,7 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                     uint8_t i_color = *input_buffer++ & 0x3F;
                     // Substitute HDMI reserved colors with nearest matches
                     if (i_color >= 240 && i_color <= 243) i_color = color_substitute[i_color - 240];
-#if CRT_SCANLINES
-                    i_color |= crt_offset;  // Use dim palette for odd lines
-#endif
+                    i_color |= crt_offset;  // Use dim palette for odd lines if CRT enabled
                     *output_buffer++ = i_color;
                 }
                 break;
@@ -673,13 +684,13 @@ void graphics_set_palette_hdmi(uint8_t i, uint32_t color888) {
     conv_color64[i * 2] = get_ser_diff_data(tmds_encoder(R), tmds_encoder(G), tmds_encoder(B));
     conv_color64[i * 2 + 1] = conv_color64[i * 2] ^ 0x0003ffffffffffffl;
 
-#if CRT_SCANLINES
     // For palette indices 0-63, also create dim versions at 64-127
+    // Always create dim palette so CRT can be toggled at runtime
     if (i < 64) {
         uint8_t dim_i = i + 64;
-        uint8_t dim_R = (R * CRT_DIM_PERCENT) / 100;
-        uint8_t dim_G = (G * CRT_DIM_PERCENT) / 100;
-        uint8_t dim_B = (B * CRT_DIM_PERCENT) / 100;
+        uint8_t dim_R = (R * crt_dim_percent) / 100;
+        uint8_t dim_G = (G * crt_dim_percent) / 100;
+        uint8_t dim_B = (B * crt_dim_percent) / 100;
         
         // Ensure minimum brightness for HDMI stability
         if (dim_R == 0 && dim_G == 0 && dim_B == 0) {
@@ -690,7 +701,6 @@ void graphics_set_palette_hdmi(uint8_t i, uint32_t color888) {
         conv_color64[dim_i * 2] = get_ser_diff_data(tmds_encoder(dim_R), tmds_encoder(dim_G), tmds_encoder(dim_B));
         conv_color64[dim_i * 2 + 1] = conv_color64[dim_i * 2] ^ 0x0003ffffffffffffl;
     }
-#endif
 };
 
 #define RGB888(r, g, b) ((r<<16) | (g << 8 ) | b )
@@ -741,6 +751,10 @@ void graphics_init(g_out g_out) {
 
 void graphics_set_palette(uint8_t i, uint32_t color888) {
     graphics_set_palette_hdmi(i, color888);
+}
+
+uint32_t graphics_get_palette(uint8_t i) {
+    return palette[i];
 }
 
 void graphics_set_bgcolor(uint32_t color888) {

@@ -309,6 +309,10 @@ static bool audio_enabled = true;
 static int master_volume = 100;  // 0-128
 static i2s_config_t i2s_config;
 
+// External audio control flags from main.c
+extern bool sn76489_enabled;  // PSG/DAC sound enable
+extern bool ym2612_enabled;   // FM sound enable
+
 // Startup mute: output silence for first N frames to let hardware settle
 #define STARTUP_FADE_FRAMES 120  // 2 seconds at 60fps
 static int startup_frame_counter = 0;
@@ -529,8 +533,8 @@ void audio_submit(void) {
     // PHASE 1: Mix both sound chips into premix_buffer (mono)
     for (int i = 0; i < available; i++) {
         int32_t mixed = 0;
-        if (i < ym_samples) mixed += ym_buffer[i];
-        if (i < sn_samples) mixed += sn_buffer[i];
+        if (ym2612_enabled && i < ym_samples) mixed += ym_buffer[i];
+        if (sn76489_enabled && i < sn_samples) mixed += sn_buffer[i];
         mixed = (mixed * master_volume) >> 7;
         if (mixed > 32767) mixed = 32767;
         if (mixed < -32768) mixed = -32768;
@@ -589,6 +593,19 @@ void audio_set_enabled(bool enabled) {
 
 bool audio_is_enabled(void) {
     return audio_enabled;
+}
+
+void audio_flush_silence(void) {
+    // Send a few frames of silence to clear the DMA buffer
+    // This prevents the last audio sample from repeating
+    if (!audio_initialized) return;
+    
+    for (int frame = 0; frame < 3; frame++) {
+        for (int i = 0; i < TARGET_SAMPLES_NTSC * 2; i++) {
+            mixed_buffer[i] = 0;
+        }
+        i2s_dma_write_count(&i2s_config, mixed_buffer, TARGET_SAMPLES_NTSC);
+    }
 }
 
 void audio_debug_buffer_values(void) {

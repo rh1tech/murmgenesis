@@ -50,6 +50,9 @@
 // ROM selector
 #include "rom_selector.h"
 
+// Settings menu
+#include "settings.h"
+
 //=============================================================================
 // Profiling
 //=============================================================================
@@ -233,6 +236,18 @@ static void print_profiling_stats(void) {
 #define SCREEN_HEIGHT 240
 static uint8_t SCREEN[SCREEN_HEIGHT][SCREEN_WIDTH];
 
+// Screen save buffer for in-game settings menu
+static uint8_t *saved_game_screen = NULL;
+
+// Button ignore until timestamp - all buttons forced released until this time
+static volatile uint64_t button_ignore_until = 0;
+
+// Simple button lock - when true, ALL buttons forced released
+static volatile bool button_lock = false;
+
+// Genesis button state (defined in gwenesis_io.c)
+extern unsigned char button_state[];
+
 // Semaphore for render core sync
 static semaphore_t render_start_semaphore;
 
@@ -289,7 +304,10 @@ volatile int ym2612_clock;
 
 // Audio enabled flags
 bool audio_enabled = true;
-bool sn76489_enabled = true;
+bool sn76489_enabled = true;  // PSG/DAC sound
+bool ym2612_enabled = true;   // FM sound
+extern bool ym2612_fm_enabled;   // FM channels mute (in ym2612.c)
+extern bool ym2612_dac_enabled;  // DAC mute (in ym2612.c)
 
 // Timing
 int system_clock;
@@ -320,6 +338,45 @@ static void __no_inline_not_in_flash_func(set_flash_timings)(int cpu_mhz) {
     qmi_hw->m[0].timing = 0x60007000 |
                         rxdelay << QMI_M0_TIMING_RXDELAY_LSB |
                         divisor << QMI_M0_TIMING_CLKDIV_LSB;
+}
+
+// Runtime PSRAM frequency setting (used after clock reconfiguration)
+static uint16_t runtime_psram_freq = PSRAM_MAX_FREQ_MHZ;
+
+// Reconfigure system clocks based on settings
+// This is called after loading settings if they differ from current clocks
+static void __no_inline_not_in_flash_func(reconfigure_clocks)(uint16_t cpu_mhz, uint16_t psram_mhz) {
+    LOG("Reconfiguring clocks: CPU=%d MHz, PSRAM=%d MHz\n", cpu_mhz, psram_mhz);
+    
+    // Set voltage based on target CPU speed
+    if (cpu_mhz >= 504) {
+        vreg_disable_voltage_limit();
+        vreg_set_voltage(VREG_VOLTAGE_1_65);
+    } else if (cpu_mhz >= 378) {
+        vreg_disable_voltage_limit();
+        vreg_set_voltage(VREG_VOLTAGE_1_60);
+    } else {
+        vreg_set_voltage(VREG_VOLTAGE_1_50);
+    }
+    sleep_ms(10);  // Let voltage settle
+    
+    // Update flash timings for new clock
+    set_flash_timings(cpu_mhz);
+    
+    // Set system clock
+    if (!set_sys_clock_khz(cpu_mhz * 1000, false)) {
+        LOG("Failed to set clock to %d MHz, falling back to 252 MHz\n", cpu_mhz);
+        set_sys_clock_khz(252 * 1000, true);
+    }
+    
+    // Store runtime PSRAM frequency for psram_init to use
+    runtime_psram_freq = psram_mhz;
+    
+    // Re-initialize PSRAM with new clock settings
+    uint psram_pin = get_psram_pin();
+    psram_init_with_freq(psram_pin, psram_mhz);
+    
+    LOG("Clocks reconfigured: CPU=%lu MHz\n", clock_get_hz(clk_sys) / 1000000);
 }
 
 // Load ROM from SD card
@@ -487,6 +544,12 @@ static void __time_critical_func(emulation_loop)(void) {
     gwenesis_vdp_set_buffer((uint8_t *)SCREEN);
     gwenesis_vdp_render_config();
     
+    // Wait for all buttons to be released before starting emulation
+    // This prevents Start+Select held during ROM selection from triggering settings immediately
+    while (settings_check_hotkey()) {
+        sleep_ms(50);
+    }
+    
     // Frame timing state (used for both pacing and adaptive frame-skip)
     uint64_t first_frame_time = 0;
     uint32_t frame_num = 0;
@@ -506,6 +569,109 @@ static void __time_critical_func(emulation_loop)(void) {
 #endif
 
     while (1) {
+        // Check for Start+Select hotkey to open settings menu
+        if (settings_check_hotkey()) {
+            // LOCK buttons immediately - no input will reach game until unlocked
+            button_lock = true;
+            button_state[0] = 0xFF;
+            button_state[1] = 0xFF;
+            button_state[2] = 0xFF;
+            
+            // Wait for buttons to be released first
+            while (settings_check_hotkey()) {
+                sleep_ms(50);
+            }
+            
+            // Save current screen BEFORE changing anything
+            // Note: saved_game_screen allocated in main(), may be NULL if allocation failed
+            if (saved_game_screen != NULL) {
+                memcpy(saved_game_screen, (uint8_t *)SCREEN, SCREEN_WIDTH * SCREEN_HEIGHT);
+            }
+            
+            // Save current palette before showing settings
+            uint64_t saved_palette[64];
+            for (int i = 0; i < 64; i++) {
+                saved_palette[i] = graphics_get_palette(i);
+            }
+            
+            // Save current screen resolution
+            int saved_screen_width = screen_width;
+            int saved_screen_height = screen_height;
+            
+            // Clear screen BEFORE changing palette to avoid showing game with wrong colors
+            memset((uint8_t *)SCREEN, 0, SCREEN_WIDTH * SCREEN_HEIGHT);
+            
+            // Force 320x240 resolution for settings menu
+            graphics_set_res(320, 240);
+            graphics_set_shift(0, 0);
+            
+            // Set up palette for settings menu
+            for (int i = 0; i < 64; i++) {
+                graphics_set_palette(i, 0x020202);
+            }
+            graphics_set_palette(63, 0xFFFFFF);  // White for text
+            graphics_set_palette(48, 0xFFFF00);  // Yellow for highlight
+            graphics_set_palette(42, 0x808080);  // Gray
+            graphics_set_palette(32, 0xFF0000);  // Red
+            graphics_restore_sync_colors();
+            
+            // Wait a couple frames for DMA to pick up changes
+            sleep_ms(50);
+            
+            // Show settings menu (screen already saved above, pass buffer for restore on cancel)
+            settings_result_t result = settings_menu_show_with_restore((uint8_t *)SCREEN, saved_game_screen);
+            
+            switch (result) {
+                case SETTINGS_RESULT_SAVE_RESTART:
+                    // Save settings to SD card and restart
+                    settings_save();
+                    watchdog_reboot(0, 0, 10);
+                    while(1) tight_loop_contents();
+                    break;
+                    
+                case SETTINGS_RESULT_RESTART:
+                    // Restart without saving
+                    watchdog_reboot(0, 0, 10);
+                    while(1) tight_loop_contents();
+                    break;
+                    
+                case SETTINGS_RESULT_CANCEL:
+                default:
+                    // Restore Genesis palette FIRST (before screen is visible)
+                    for (int i = 0; i < 64; i++) {
+                        graphics_set_palette(i, saved_palette[i]);
+                    }
+                    graphics_restore_sync_colors();
+                    
+                    // Restore screen resolution
+                    graphics_set_res(saved_screen_width, saved_screen_height);
+                    graphics_set_shift(saved_screen_width != 320 ? 32 : 0, saved_screen_height != 240 ? 8 : 0);
+                    
+                    // Now restore the saved screen (with correct palette already set)
+                    if (saved_game_screen != NULL) {
+                        memcpy((uint8_t *)SCREEN, saved_game_screen, SCREEN_WIDTH * SCREEN_HEIGHT);
+                    }
+                    gwenesis_vdp_render_config();
+                    last_screen_width = saved_screen_width;
+                    last_screen_height = saved_screen_height;
+                    
+                    // Keep buttons locked, wait for ALL buttons to be released
+                    do {
+                        sleep_ms(50);
+                        nespad_read();
+                    } while (nespad_state & (DPAD_A | DPAD_B | DPAD_START | DPAD_SELECT));
+                    
+                    // Extra delay to ensure clean release
+                    sleep_ms(100);
+                    
+                    // NOW unlock buttons
+                    button_lock = false;
+                    
+                    // Skip to next frame
+                    continue;
+            }
+        }
+        
         int hint_counter = gwenesis_vdp_regs[10];
         
         bool is_pal = REG1_PAL;
@@ -913,6 +1079,38 @@ int main(void) {
     }
     LOG("SD card mounted\n");
     
+    // Load settings from SD card
+    LOG("Loading settings...\n");
+    settings_load();
+    LOG("Settings loaded: CPU=%d MHz, PSRAM=%d MHz, FM=%s, DAC=%s, CRT=%s/%d%%\n",
+        g_settings.cpu_freq, g_settings.psram_freq,
+        g_settings.fm_sound ? "on" : "off",
+        g_settings.dac_sound ? "on" : "off",
+        g_settings.crt_effect ? "on" : "off",
+        g_settings.crt_dim);
+    
+    // Apply runtime settings
+    // CRT effect can be changed at runtime
+    graphics_set_crt_effect(g_settings.crt_effect, g_settings.crt_dim);
+    
+    // Apply audio settings
+    // FM SOUND controls FM channels, DAC SOUND controls DAC samples and PSG
+    // YM2612 chip must run if either FM or DAC is enabled
+    ym2612_enabled = g_settings.fm_sound || g_settings.dac_sound;
+    ym2612_fm_enabled = g_settings.fm_sound;
+    ym2612_dac_enabled = g_settings.dac_sound;
+    sn76489_enabled = g_settings.dac_sound;
+    LOG("Audio: FM=%s, DAC=%s\n", g_settings.fm_sound ? "on" : "off", g_settings.dac_sound ? "on" : "off");
+    
+    // Check if CPU/PSRAM frequencies need to change
+    // If they differ from compile-time values, we need to reconfigure
+    uint32_t current_cpu_mhz = clock_get_hz(clk_sys) / 1000000;
+    if (g_settings.cpu_freq != current_cpu_mhz || g_settings.psram_freq != PSRAM_MAX_FREQ_MHZ) {
+        LOG("Settings require clock reconfiguration (CPU: %lu->%d, PSRAM: %d->%d)\n",
+            current_cpu_mhz, g_settings.cpu_freq, PSRAM_MAX_FREQ_MHZ, g_settings.psram_freq);
+        reconfigure_clocks(g_settings.cpu_freq, g_settings.psram_freq);
+    }
+    
     // Clear the screen buffer BEFORE HDMI init - DMA starts scanning immediately
     // Use index 1 instead of 0 - index 0 causes HDMI issues at 378MHz
     memset(SCREEN, 1, sizeof(SCREEN));
@@ -1005,6 +1203,12 @@ int main(void) {
     // Initialize emulator
     genesis_init();
     
+    // Allocate screen save buffer for in-game settings menu
+    saved_game_screen = (uint8_t *)psram_malloc(SCREEN_WIDTH * SCREEN_HEIGHT);
+    if (saved_game_screen == NULL) {
+        LOG("Warning: Could not allocate screen save buffer\n");
+    }
+    
     // Audio is initialized on Core 1 (render_core)
     
     LOG("Starting emulation...\n");
@@ -1051,6 +1255,14 @@ extern unsigned char button_state[];
 // - Select+Start → Reset to ROM selector
 
 void gwenesis_io_get_buttons(void) {
+    // Simple lock - if locked, all buttons released, period.
+    if (button_lock) {
+        button_state[0] = 0xFF;
+        button_state[1] = 0xFF;
+        button_state[2] = 0xFF;
+        return;
+    }
+
 #ifdef NESPAD_GPIO_CLK
     // Read gamepad state
     nespad_read();
@@ -1080,12 +1292,8 @@ void gwenesis_io_get_buttons(void) {
     }
     prev_nespad_state = nespad_state;
     
-    // Check for SELECT+START combo to return to ROM selector
-    if ((nespad_state & DPAD_SELECT) && (nespad_state & DPAD_START)) {
-        // Trigger watchdog reset to restart and show ROM selector
-        watchdog_reboot(0, 0, 10);
-        while(1) tight_loop_contents();
-    }
+    // Check for SELECT+START combo to open settings menu
+    // Note: The actual menu is shown from the emulation loop to properly pause emulation
     
     // Detect if SNES controller (has extended buttons)
     bool is_snes_pad1 = (nespad_state & (DPAD_X | DPAD_Y | DPAD_LT | DPAD_RT));
@@ -1135,7 +1343,10 @@ void gwenesis_io_get_buttons(void) {
         }
     }
     
-    if (nespad_state & DPAD_START) button_state[0] &= ~(1 << 7);
+    // Only pass Start to game if Select is NOT held (to allow Start+Select hotkey)
+    if ((nespad_state & DPAD_START) && !(nespad_state & DPAD_SELECT)) {
+        button_state[0] &= ~(1 << 7);
+    }
     
     // Map buttons to Genesis controller - Pad 2
     button_state[1] = 0xFF;
@@ -1194,11 +1405,7 @@ void gwenesis_io_get_buttons(void) {
         if (gp.buttons & 0x04) button_state[0] &= ~(1 << 5); // C → Genesis C
         if (gp.buttons & 0x40) button_state[0] &= ~(1 << 7); // Start → Genesis Start
         
-        // SELECT+START combo for USB gamepad too
-        if ((gp.buttons & 0x40) && (gp.buttons & 0x80)) {
-            watchdog_reboot(0, 0, 10);
-            while(1) tight_loop_contents();
-        }
+        // SELECT+START combo is now handled in the emulation loop for settings menu
     }
 #endif
 }

@@ -70,11 +70,11 @@ unsigned char M68K_RAM[MAX_RAM_SIZE];    // 68K RAM
 
 /*******************************************************************************
  * M68K ROM Page Cache - caches hot ROM pages in fast SRAM
- * Uses 64KB (16 x 4KB pages) with direct-mapped addressing
+ * Uses 60KB (15 x 4KB pages) with direct-mapped addressing
  ******************************************************************************/
 #define ROM_CACHE_PAGE_SIZE     4096    /* 4KB per page */
 #define ROM_CACHE_PAGE_SHIFT    12      /* log2(4096) */
-#define ROM_CACHE_NUM_PAGES     16      /* 16 pages = 64KB total */
+#define ROM_CACHE_NUM_PAGES     15      /* 15 pages = 60KB total */
 #define ROM_CACHE_PAGE_MASK     (ROM_CACHE_NUM_PAGES - 1)
 
 static uint8_t __attribute__((aligned(4))) rom_page_cache[ROM_CACHE_NUM_PAGES][ROM_CACHE_PAGE_SIZE];

@@ -17,6 +17,8 @@
 #ifndef _H_YM2612_
 #define _H_YM2612_
 
+#include <stdbool.h>
+
 /* Genesis-Plus-GX chip types */
 enum {
   YM2612_DISCRETE = 0,   /* Discrete chip with 9-bit DAC and ladder effect */
@@ -27,6 +29,10 @@ enum {
 extern int16_t *gwenesis_ym2612_buffer;
 extern volatile int ym2612_index;
 extern volatile int ym2612_clock;
+
+/* External control flags for muting FM vs DAC */
+extern bool ym2612_fm_enabled;   /* Mute FM channels 1-6 when false */
+extern bool ym2612_dac_enabled;  /* Mute DAC output when false */
 
 extern void YM2612Init(void);
 extern void YM2612Config(unsigned char type);  /* Genesis-Plus-GX: chip type instead of dac_bits */

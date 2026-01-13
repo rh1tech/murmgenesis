@@ -8,7 +8,10 @@
 #include "HDMI.h"
 #include "board_config.h"
 #include "hardware/clocks.h"
+#include "hardware/watchdog.h"
 #include "nespad/nespad.h"
+#include "settings.h"
+#include "psram_allocator.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -72,6 +75,9 @@ static int scrollbar_target_y = 0;   // Target position
 // Smooth cursor animation
 static int cursor_current_y = 0;  // Current animated highlight Y position
 static int cursor_target_y = 0;   // Target highlight Y position
+
+// Screen save buffer for settings menu (allocated from PSRAM at runtime)
+static uint8_t *saved_screen_buffer = NULL;
 
 // Forward declarations
 static void draw_text_dos(uint8_t *screen, int x, int y, const char *text, uint8_t color);
@@ -366,16 +372,10 @@ static void draw_info_text(uint8_t *screen) {
     uint32_t sys_hz = clock_get_hz(clk_sys);
     uint32_t cpu_mhz = (sys_hz + 500000) / 1000000;
 
-    // PSRAM clock: mirror psram_init divisor logic
-    const int max_psram_hz = PSRAM_MAX_FREQ_MHZ * 1000000;
-    int divisor = (int)((sys_hz + max_psram_hz - 1) / max_psram_hz);
-    if (divisor == 1 && sys_hz > 100000000) {
-        divisor = 2;
-    }
-    uint32_t psram_hz = sys_hz / (uint32_t)divisor;
-    uint32_t psram_mhz = (psram_hz + 500000) / 1000000;
+    // PSRAM clock: show the configured max frequency from settings
+    uint32_t psram_mhz = g_settings.psram_freq;
 
-    snprintf(info_str, sizeof(info_str), "V.%s %s %u MHZ/%u MHZ", MURMGENESIS_VERSION, board_str, cpu_mhz, psram_mhz);
+    snprintf(info_str, sizeof(info_str), "V%s %s %u MHZ/%u MHZ", MURMGENESIS_VERSION, board_str, cpu_mhz, psram_mhz);
 
     // Center with DOS font metrics
     int text_width = (int)(strlen(info_str) * DOS_FONT_ADVANCE);
@@ -1015,6 +1015,16 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
     printf("ROM Selector: Starting...\n");
 #endif
 
+    // Allocate screen save buffer from PSRAM for settings menu
+    if (saved_screen_buffer == NULL) {
+        saved_screen_buffer = (uint8_t *)psram_malloc(SCREEN_WIDTH * SCREEN_HEIGHT);
+        if (saved_screen_buffer == NULL) {
+#if ENABLE_LOGGING
+            printf("Warning: Could not allocate screen save buffer\n");
+#endif
+        }
+    }
+
     // Scan ROMs first while screen is blank
     memset(screen_buffer, 1, SCREEN_WIDTH * SCREEN_HEIGHT);
     scan_roms();
@@ -1157,11 +1167,62 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
             }
         }
         
+        // Check for Start+Select combo (for settings menu)
+        if ((buttons & DPAD_SELECT) && (buttons & DPAD_START)) {
+            // Wait for buttons to be released
+            while ((nespad_state & DPAD_SELECT) && (nespad_state & DPAD_START)) {
+                nespad_read();
+                sleep_ms(50);
+            }
+            
+            // Save screen BEFORE showing settings
+            if (saved_screen_buffer != NULL) {
+                memcpy(saved_screen_buffer, screen_buffer, SCREEN_WIDTH * SCREEN_HEIGHT);
+            }
+            
+            // Set up palette for settings menu
+            graphics_set_palette(48, 0xFFFF00);  // Yellow for highlight
+            graphics_set_palette(42, 0x808080);  // Gray
+            graphics_set_palette(32, 0xFF0000);  // Red
+            graphics_restore_sync_colors();
+            
+            // Show settings menu
+            settings_result_t result = settings_menu_show_with_restore(screen_buffer, saved_screen_buffer);
+            
+            switch (result) {
+                case SETTINGS_RESULT_SAVE_RESTART:
+                    settings_save();
+                    watchdog_reboot(0, 0, 10);
+                    while(1) tight_loop_contents();
+                    break;
+                    
+                case SETTINGS_RESULT_RESTART:
+                    watchdog_reboot(0, 0, 10);
+                    while(1) tight_loop_contents();
+                    break;
+                    
+                case SETTINGS_RESULT_CANCEL:
+                default:
+                    // Restore saved screen (ROM selector palette unchanged, no need to restore)
+                    if (saved_screen_buffer != NULL) {
+                        memcpy(screen_buffer, saved_screen_buffer, SCREEN_WIDTH * SCREEN_HEIGHT);
+                    }
+                    prev_buttons = 0;  // Reset button state tracking
+                    // Button wait already done in settings.c
+                    break;
+            }
+            continue;
+        }
+        
+        // Only confirm ROM selection if Start/A is pressed WITHOUT Select
         if (buttons_pressed & (DPAD_A | DPAD_START)) {
-            if (rom_count > 0) {
-                // Build full path
-                snprintf(selected_rom_path, buffer_size, "/genesis/%s", rom_list[selected].filename);
-                return true;
+            // If Select is also held, this is the settings combo - don't confirm ROM
+            if (!(buttons & DPAD_SELECT)) {
+                if (rom_count > 0) {
+                    // Build full path
+                    snprintf(selected_rom_path, buffer_size, "/genesis/%s", rom_list[selected].filename);
+                    return true;
+                }
             }
         }
         
