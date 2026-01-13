@@ -38,5 +38,17 @@ if [ -n "$FRAMESKIP_LEVEL" ]; then
     echo "FRAMESKIP_LEVEL=$FRAMESKIP_LEVEL"
 fi
 
+# CRT scanline effect: dims every other scanline for retro look
+# Set CRT_SCANLINES=1 to enable
+if [ "$CRT_SCANLINES" = "1" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DCRT_SCANLINES=1"
+    echo "CRT_SCANLINES=1 (retro CRT effect)"
+    # Optional: CRT_DIM_PERCENT=50 (0-100, default 50)
+    if [ -n "$CRT_DIM_PERCENT" ]; then
+        CMAKE_OPTS="$CMAKE_OPTS -DCRT_DIM_PERCENT=$CRT_DIM_PERCENT"
+        echo "CRT_DIM_PERCENT=$CRT_DIM_PERCENT"
+    fi
+fi
+
 cmake $CMAKE_OPTS ..
 make -j4

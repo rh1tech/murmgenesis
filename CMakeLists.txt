@@ -33,6 +33,13 @@ set(LINE_INTERLACE "0" CACHE STRING "Line interlacing: 0=off, 1=on")
 # 0 = 60fps (no skip), 1 = 50fps (default), 2 = 40fps, 3 = 30fps, 4 = 20fps
 set(FRAMESKIP_LEVEL "1" CACHE STRING "Frameskip level: 0-4")
 
+# CRT scanline effect: dims every other scanline for retro look
+# 0 = off (default), 1 = on (creates CRT-like appearance, masks low FPS)
+set(CRT_SCANLINES "0" CACHE STRING "CRT scanlines: 0=off, 1=on")
+
+# CRT dim brightness percentage (only used if CRT_SCANLINES=1)
+set(CRT_DIM_PERCENT "50" CACHE STRING "CRT dim line brightness: 0-100")
+
 # CPU voltage selection based on speed
 if(CPU_SPEED GREATER_EQUAL 504)
     set(CPU_VOLTAGE "VREG_VOLTAGE_1_65")
@@ -90,6 +97,8 @@ target_include_directories(drivers PUBLIC drivers src ${CMAKE_CURRENT_BINARY_DIR
 target_compile_definitions(drivers PRIVATE
     BOARD_${BOARD_VARIANT}
     PSRAM_MAX_FREQ_MHZ=${PSRAM_SPEED}
+    CRT_SCANLINES=${CRT_SCANLINES}
+    CRT_DIM_PERCENT=${CRT_DIM_PERCENT}
 )
 
 target_link_libraries(drivers pico_stdlib hardware_dma hardware_pio hardware_spi)

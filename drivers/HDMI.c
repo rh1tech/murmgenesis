@@ -18,6 +18,16 @@ int graphics_buffer_shift_x = 0;
 int graphics_buffer_shift_y = 0;
 enum graphics_mode_t hdmi_graphics_mode = GRAPHICSMODE_DEFAULT;
 
+// CRT scanline effect: 0=off, 1=on (dims every other scanline)
+#ifndef CRT_SCANLINES
+#define CRT_SCANLINES 0
+#endif
+
+// Brightness for dim scanlines (0-100, where 100 = same as bright)
+#ifndef CRT_DIM_PERCENT
+#define CRT_DIM_PERCENT 50
+#endif
+
 // Graphics buffer pointer in scratch memory for fast DMA handler access
 static uint8_t * __scratch_y("hdmi_ptr") graphics_buffer = NULL;
 
@@ -253,6 +263,10 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
     if (line < mode.h_width ) {
         uint8_t* output_buffer = activ_buf + 72; //для выравнивания синхры;
         int y = line >> 1;
+#if CRT_SCANLINES
+        // For CRT effect: odd display lines use dim palette (indices 64-127)
+        uint8_t crt_offset = (y & 1) ? 64 : 0;
+#endif
         //область изображения
         uint8_t* input_buffer = get_line_buffer(y);
         if (!input_buffer) {
@@ -285,6 +299,9 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                         register uint8_t c = input_buffer[x++] & 0x3F;
                         // Substitute HDMI reserved colors with nearest matches
                         if (c >= 240 && c <= 243) c = color_substitute[c - 240];
+#if CRT_SCANLINES
+                        c |= crt_offset;  // Use dim palette for odd lines
+#endif
                         *output_buffer++ = c;
                     }
                     else
@@ -297,6 +314,9 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                     uint8_t i_color = *input_buffer++ & 0x3F;
                     // Substitute HDMI reserved colors with nearest matches
                     if (i_color >= 240 && i_color <= 243) i_color = color_substitute[i_color - 240];
+#if CRT_SCANLINES
+                    i_color |= crt_offset;  // Use dim palette for odd lines
+#endif
                     *output_buffer++ = i_color;
                 }
                 break;
@@ -652,6 +672,25 @@ void graphics_set_palette_hdmi(uint8_t i, uint32_t color888) {
     
     conv_color64[i * 2] = get_ser_diff_data(tmds_encoder(R), tmds_encoder(G), tmds_encoder(B));
     conv_color64[i * 2 + 1] = conv_color64[i * 2] ^ 0x0003ffffffffffffl;
+
+#if CRT_SCANLINES
+    // For palette indices 0-63, also create dim versions at 64-127
+    if (i < 64) {
+        uint8_t dim_i = i + 64;
+        uint8_t dim_R = (R * CRT_DIM_PERCENT) / 100;
+        uint8_t dim_G = (G * CRT_DIM_PERCENT) / 100;
+        uint8_t dim_B = (B * CRT_DIM_PERCENT) / 100;
+        
+        // Ensure minimum brightness for HDMI stability
+        if (dim_R == 0 && dim_G == 0 && dim_B == 0) {
+            dim_R = dim_G = dim_B = 1;
+        }
+        
+        palette[dim_i] = (dim_R << 16) | (dim_G << 8) | dim_B;
+        conv_color64[dim_i * 2] = get_ser_diff_data(tmds_encoder(dim_R), tmds_encoder(dim_G), tmds_encoder(dim_B));
+        conv_color64[dim_i * 2 + 1] = conv_color64[dim_i * 2] ^ 0x0003ffffffffffffl;
+    }
+#endif
 };
 
 #define RGB888(r, g, b) ((r<<16) | (g << 8 ) | b )
