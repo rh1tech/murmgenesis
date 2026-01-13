@@ -2254,9 +2254,9 @@ void YM2612Write(unsigned int a, unsigned int v,  int target)
 {
   ym_log(__FUNCTION__," %06x : %02x",a,v);
 
-  //Sync - TEMPORARILY DISABLED to test if CPU load causes clicks
-  // if (GWENESIS_AUDIO_ACCURATE == 1)
-  //   ym2612_run(target); 
+  /* Sync audio generation up to this point before applying the write */
+  if (GWENESIS_AUDIO_ACCURATE == 1)
+    ym2612_run(target); 
 
   v &= 0xff;  /* adjust to 8 bit bus */
 

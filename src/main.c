@@ -32,6 +32,7 @@
 #include "cpus/M68K/m68k.h"
 
 #include "sound/z80inst.h"
+#include "sound/z80_benchmark.h"
 #include "sound/ym2612.h"
 #include "sound/gwenesis_sn76489.h"
 
@@ -71,12 +72,41 @@
 #define ENABLE_ADAPTIVE_FRAMESKIP 0
 #define ENABLE_CONSTANT_FRAMESKIP 1
 
+// Line interlacing: render only every other line and duplicate to halve VDP time.
+// Set via compile flag: -DLINE_INTERLACE=1 (0=off, 1=on)
+#ifndef LINE_INTERLACE
+#define LINE_INTERLACE 0
+#endif
+
 // Constant frameskip pattern:
 // - Pattern length is in frames
 // - Bit i (LSB=frame 0) indicates whether to render that frame (1) or skip (0)
-// Default: render 5 frames then skip 1 => ~50Hz presentation from 60Hz.
-#define FRAMESKIP_PATTERN_LEN 6u
-#define FRAMESKIP_PATTERN_MASK 0x1Fu  // 0b01_1111 : render frames 0-4, skip frame 5
+// Configurable via -DFRAMESKIP_LEVEL=N where:
+//   0 = render all frames (60 fps target)
+//   1 = render 5/6 frames (~50 fps) - DEFAULT
+//   2 = render 4/6 frames (~40 fps)
+//   3 = render 3/6 frames (~30 fps)
+//   4 = render 2/6 frames (~20 fps)
+#ifndef FRAMESKIP_LEVEL
+#define FRAMESKIP_LEVEL 1
+#endif
+
+#if FRAMESKIP_LEVEL == 0
+  #define FRAMESKIP_PATTERN_LEN 1u
+  #define FRAMESKIP_PATTERN_MASK 0x01u  // render every frame
+#elif FRAMESKIP_LEVEL == 2
+  #define FRAMESKIP_PATTERN_LEN 6u
+  #define FRAMESKIP_PATTERN_MASK 0x15u  // 0b01_0101 : render frames 0,2,4 (4/6)
+#elif FRAMESKIP_LEVEL == 3
+  #define FRAMESKIP_PATTERN_LEN 6u
+  #define FRAMESKIP_PATTERN_MASK 0x09u  // 0b00_1001 : render frames 0,3 (3/6 = 30fps)
+#elif FRAMESKIP_LEVEL == 4
+  #define FRAMESKIP_PATTERN_LEN 6u
+  #define FRAMESKIP_PATTERN_MASK 0x05u  // 0b00_0101 : render frames 0,2 (2/6 = 20fps)
+#else  // Default: FRAMESKIP_LEVEL == 1
+  #define FRAMESKIP_PATTERN_LEN 6u
+  #define FRAMESKIP_PATTERN_MASK 0x1Fu  // 0b01_1111 : render frames 0-4, skip frame 5
+#endif
 #define FRAMESKIP_MAX_CONSECUTIVE 4
 #define FRAMESKIP_MAX_BACKLOG_FRAMES 8
 #define FRAMESKIP_RENDER_COST_DEFAULT_US 4000u
@@ -564,6 +594,11 @@ static void __time_critical_func(emulation_loop)(void) {
         // Reset Z80 clock for new frame (now runs on Core 0)
         extern volatile int zclk;
         zclk = 0;
+#ifdef USE_Z80_GPX
+        // GPX Z80 needs timing reset when zclk is reset
+        extern void z80_reset_timing(void);
+        z80_reset_timing();
+#endif
         
         // Reset sound chip indices for new frame
         sn76489_clock = 0;
@@ -649,9 +684,22 @@ static void __time_critical_func(emulation_loop)(void) {
         if (render_this_frame) {
             PROFILE_START();
             uint64_t render_start_us = time_us_64();
+#if LINE_INTERLACE
+            // Line interlacing: render every other line, then duplicate
+            // Alternates between even and odd lines each frame for better quality
+            int start_line = (frame_counter & 1);  // 0 or 1
+            for (int line = start_line; line < screen_height; line += 2) {
+                gwenesis_vdp_render_line(line);
+            }
+            // Duplicate rendered lines to adjacent lines (using SCREEN buffer)
+            for (int line = start_line; line < screen_height - 1; line += 2) {
+                memcpy(SCREEN[line + 1], SCREEN[line], screen_width);
+            }
+#else
             for (int line = 0; line < screen_height; line++) {
                 gwenesis_vdp_render_line(line);
             }
+#endif
             uint32_t render_us = (uint32_t)(time_us_64() - render_start_us);
             PROFILE_END(vdp_time);
 
@@ -664,6 +712,10 @@ static void __time_critical_func(emulation_loop)(void) {
         
         frame_counter++;
         m68k.cycles -= system_clock;
+
+#if Z80_BENCHMARK
+        z80_benchmark_frame_end();
+#endif
 
 #if M68K_OPCODE_PROFILING
         m68k_check_profile_report();

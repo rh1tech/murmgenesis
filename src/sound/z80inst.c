@@ -21,6 +21,7 @@ __license__ = "GPLv3"
 #include <assert.h>
 #include "Z80.h"
 #include "z80inst.h"
+#include "z80_benchmark.h"
 #include "m68k.h"
 #include "gwenesis_bus.h"
 #include "ym2612.h"
@@ -78,6 +79,7 @@ volatile int Z80_BANK;
 
 
 void z80_start() {
+    z80_benchmark_init();
     cpu.IPeriod = 1;
     cpu.ICount = 0;
     cpu.Trace = 0;
@@ -121,13 +123,21 @@ void z80_run(int target) {
       return;
     }
 
-   // z80_log("z80_run", "%1d%1d%1d||zclk=%d,tgt=%d",reset_once, bus_ack, reset, zclk, target);
-#if USE_Z80_ARM_ASM
-    rem = z80_arm_exec(current_timeslice / Z80_FREQ_DIVISOR);
-#else
-    rem = ExecZ80(&cpu, current_timeslice / Z80_FREQ_DIVISOR);
+    int cycles_to_run = current_timeslice / Z80_FREQ_DIVISOR;
+#if Z80_BENCHMARK
+    uint64_t bench_start = z80_benchmark_start();
 #endif
 
+   // z80_log("z80_run", "%1d%1d%1d||zclk=%d,tgt=%d",reset_once, bus_ack, reset, zclk, target);
+#if USE_Z80_ARM_ASM
+    rem = z80_arm_exec(cycles_to_run);
+#else
+    rem = ExecZ80(&cpu, cycles_to_run);
+#endif
+
+#if Z80_BENCHMARK
+    z80_benchmark_end(bench_start, cycles_to_run - rem);
+#endif
   }
 
   zclk = target - rem * Z80_FREQ_DIVISOR;

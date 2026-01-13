@@ -18,5 +18,25 @@ if [ -n "$Z80_SLICE_LINES" ]; then
     echo "Z80_SLICE_LINES=$Z80_SLICE_LINES"
 fi
 
+# Optional Z80 core selection: OLD (original) or GPX (Genesis-Plus-GX)
+if [ -n "$Z80_CORE" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DZ80_CORE=$Z80_CORE"
+    echo "Z80_CORE=$Z80_CORE"
+fi
+
+# Line interlacing: render every other line (halves VDP time, some quality loss)
+# Set LINE_INTERLACE=1 to enable
+if [ "$LINE_INTERLACE" = "1" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DLINE_INTERLACE=1"
+    echo "LINE_INTERLACE=1 (rendering every other line)"
+fi
+
+# Frame skip level: 0=60fps, 1=50fps (default), 2=40fps, 3=30fps, 4=20fps
+# Set FRAMESKIP_LEVEL=N to change
+if [ -n "$FRAMESKIP_LEVEL" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DFRAMESKIP_LEVEL=$FRAMESKIP_LEVEL"
+    echo "FRAMESKIP_LEVEL=$FRAMESKIP_LEVEL"
+fi
+
 cmake $CMAKE_OPTS ..
 make -j4

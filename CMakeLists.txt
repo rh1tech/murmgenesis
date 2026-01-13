@@ -17,8 +17,21 @@ set(PSRAM_SPEED "100" CACHE STRING "PSRAM max frequency in MHz: 84, 100, 133, 16
 # some PCM-heavy drivers.
 set(Z80_SLICE_LINES "16" CACHE STRING "Run Z80 every N scanlines (default 16)")
 
+# Z80 CPU selection (default: OLD for best performance)
+#   OLD = Marat Fayzullin's core with ARM assembly optimizations (~8.5 MHz effective)
+#   GPX = Genesis-Plus-GX pure C (EXPERIMENTAL, ~31% slower but useful for debugging)
+set(Z80_CORE "OLD" CACHE STRING "Z80 core: OLD (default) or GPX (experimental)")
+
 # M68K CPU selection: OLD = original with ASM opts, GPX = Genesis-Plus-GX pure C
 set(M68K_CORE "OLD" CACHE STRING "M68K core: OLD (asm optimized) or GPX (Genesis-Plus-GX)")
+
+# Line interlacing: render every other line to halve VDP rendering time
+# 0 = off (default), 1 = on (some visual quality loss)
+set(LINE_INTERLACE "0" CACHE STRING "Line interlacing: 0=off, 1=on")
+
+# Frame skip level: controls how many frames are rendered vs skipped
+# 0 = 60fps (no skip), 1 = 50fps (default), 2 = 40fps, 3 = 30fps, 4 = 20fps
+set(FRAMESKIP_LEVEL "1" CACHE STRING "Frameskip level: 0-4")
 
 # CPU voltage selection based on speed
 if(CPU_SPEED GREATER_EQUAL 504)
@@ -81,21 +94,16 @@ target_compile_definitions(drivers PRIVATE
 
 target_link_libraries(drivers pico_stdlib hardware_dma hardware_pio hardware_spi)
 
-# Gwenesis emulator sources
+# Gwenesis emulator sources (common)
 set(GWENESIS_SOURCES
     # Bus
     src/bus/gwenesis_bus.c
-    # CPUs - Z80
-    src/cpus/Z80/Z80.c
-    src/cpus/Z80/z80_arm.S
     # IO
     src/io/gwenesis_io.c
-    # Sound
+    # Sound (common)
     src/sound/gwenesis_sn76489.c
     src/sound/ym2612.c
     src/sound/ym2612_opt.S
-    src/sound/z80inst.c
-    src/sound/z80_mem_opt.S
     # VDP
     src/vdp/gwenesis_vdp_gfx.c
     src/vdp/gwenesis_vdp_mem.c
@@ -105,6 +113,28 @@ set(GWENESIS_SOURCES
     # Savestate
     src/savestate/gwenesis_savestate.c
 )
+
+# Select Z80 core based on configuration
+if(Z80_CORE STREQUAL "GPX")
+    message(STATUS "Using Genesis-Plus-GX Z80 core (pure C)")
+    list(APPEND GWENESIS_SOURCES 
+        src/cpus/Z80_GPX/z80_gpx.c
+        src/sound/z80inst_gpx.c
+        src/sound/z80_benchmark.c
+    )
+    set(Z80_INCLUDE_DIR src/cpus/Z80_GPX)
+    add_compile_definitions(USE_Z80_GPX=1)
+else()
+    message(STATUS "Using original Z80 core (with ASM optimizations)")
+    list(APPEND GWENESIS_SOURCES 
+        src/cpus/Z80/Z80.c
+        src/cpus/Z80/z80_arm.S
+        src/sound/z80inst.c
+        src/sound/z80_mem_opt.S
+        src/sound/z80_benchmark.c
+    )
+    set(Z80_INCLUDE_DIR src/cpus/Z80)
+endif()
 
 # Select M68K core based on configuration
 if(M68K_CORE STREQUAL "GPX")
@@ -125,6 +155,11 @@ set_source_files_properties(src/cpus/M68K/m68kcpu.c src/cpus/M68K_GPX/m68kcpu.c 
     COMPILE_FLAGS "-O3 -ffast-math -funroll-loops -finline-functions"
 )
 
+# Apply aggressive optimizations to Z80 GPX CPU
+set_source_files_properties(src/cpus/Z80_GPX/z80_gpx.c PROPERTIES
+    COMPILE_FLAGS "-O3 -ffast-math -funroll-loops -finline-functions"
+)
+
 add_executable(murmgenesis
     src/main.c
     src/rom_selector.c
@@ -135,7 +170,7 @@ target_include_directories(murmgenesis PRIVATE
     src
     src/bus
     ${M68K_INCLUDE_DIR}
-    src/cpus/Z80
+    ${Z80_INCLUDE_DIR}
     src/io
     src/sound
     src/vdp
@@ -163,6 +198,9 @@ target_compile_definitions(murmgenesis PRIVATE
     PICO_AUDIO_I2S_PIO=0
     PICO_AUDIO_I2S_DMA_IRQ=1
     Z80_SLICE_LINES=${Z80_SLICE_LINES}
+    # Performance tuning options
+    LINE_INTERLACE=${LINE_INTERLACE}
+    FRAMESKIP_LEVEL=${FRAMESKIP_LEVEL}
 )
 
 # Set peripheral pins based on board variant
