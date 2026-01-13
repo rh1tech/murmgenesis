@@ -46,16 +46,33 @@
 typedef enum {
     MENU_CPU_FREQ,
     MENU_PSRAM_FREQ,
+    MENU_Z80,
+    MENU_AUDIO,
     MENU_FM_SOUND,
-    MENU_DAC_SOUND,
+    MENU_CHANNELS,
     MENU_CRT_EFFECT,
     MENU_CRT_DIM,
+    MENU_FRAMESKIP,
     MENU_SEPARATOR,  // Visual separator
     MENU_SAVE_RESTART,
     MENU_RESTART,
     MENU_CANCEL,
     MENU_ITEM_COUNT
 } menu_item_t;
+
+// Channel submenu items
+typedef enum {
+    CHAN_FM1,
+    CHAN_FM2,
+    CHAN_FM3,
+    CHAN_FM4,
+    CHAN_FM5,
+    CHAN_FM6,
+    CHAN_PSG,
+    CHAN_SEPARATOR,
+    CHAN_BACK,
+    CHAN_ITEM_COUNT
+} channel_menu_item_t;
 
 // Global settings instance
 settings_t g_settings = {
@@ -64,8 +81,16 @@ settings_t g_settings = {
     .fm_sound = true,
     .dac_sound = true,
     .crt_effect = false,
-    .crt_dim = 60
+    .crt_dim = 60,
+    .z80_enabled = true,
+    .audio_enabled = true,
+    .channel_mask = 0x7F,  // All 7 channels enabled (bits 0-6)
+    .frameskip = 3  // Default: high (30fps)
 };
+
+// Frameskip level names
+static const char* frameskip_names[] = {"NONE", "LOW", "MEDIUM", "HIGH", "EXTREME"};
+#define FRAMESKIP_MAX_LEVEL 4
 
 // Local copy for editing
 static settings_t edit_settings;
@@ -244,10 +269,13 @@ static const char* get_menu_label(menu_item_t item) {
     switch (item) {
         case MENU_CPU_FREQ:     return "RP2350 FREQ";
         case MENU_PSRAM_FREQ:   return "PSRAM FREQ";
+        case MENU_Z80:          return "Z80";
+        case MENU_AUDIO:        return "AUDIO";
         case MENU_FM_SOUND:     return "FM SOUND";
-        case MENU_DAC_SOUND:    return "DAC SOUND";
+        case MENU_CHANNELS:     return "CHANNELS";
         case MENU_CRT_EFFECT:   return "CRT EFFECT";
         case MENU_CRT_DIM:      return "CRT DIM";
+        case MENU_FRAMESKIP:    return "FRAMESKIP";
         case MENU_SEPARATOR:    return "";
         case MENU_SAVE_RESTART: return "SAVE AND RESTART";
         case MENU_RESTART:      return "RESTART WITHOUT SAVING";
@@ -265,11 +293,22 @@ static void get_menu_value(menu_item_t item, char *buf, size_t size) {
         case MENU_PSRAM_FREQ:
             snprintf(buf, size, "< %d MHZ >", edit_settings.psram_freq);
             break;
-        case MENU_FM_SOUND:
-            snprintf(buf, size, "< %s >", edit_settings.fm_sound ? "ON" : "OFF");
+        case MENU_Z80:
+            snprintf(buf, size, "< %s >", edit_settings.z80_enabled ? "ENABLED" : "DISABLED");
             break;
-        case MENU_DAC_SOUND:
-            snprintf(buf, size, "< %s >", edit_settings.dac_sound ? "ON" : "OFF");
+        case MENU_AUDIO:
+            snprintf(buf, size, "< %s >", edit_settings.audio_enabled ? "ENABLED" : "DISABLED");
+            break;
+        case MENU_FM_SOUND:
+            if (edit_settings.audio_enabled) {
+                snprintf(buf, size, "< %s >", edit_settings.fm_sound ? "ON" : "OFF");
+            } else {
+                snprintf(buf, size, "---");
+            }
+            break;
+        case MENU_CHANNELS:
+            // Submenu - no value displayed here
+            buf[0] = '\0';
             break;
         case MENU_CRT_EFFECT:
             snprintf(buf, size, "< %s >", edit_settings.crt_effect ? "ON" : "OFF");
@@ -280,6 +319,9 @@ static void get_menu_value(menu_item_t item, char *buf, size_t size) {
             } else {
                 snprintf(buf, size, "---");
             }
+            break;
+        case MENU_FRAMESKIP:
+            snprintf(buf, size, "< %s >", frameskip_names[edit_settings.frameskip]);
             break;
         default:
             buf[0] = '\0';
@@ -306,12 +348,22 @@ static void change_setting(menu_item_t item, int direction) {
             }
             break;
             
-        case MENU_FM_SOUND:
-            edit_settings.fm_sound = !edit_settings.fm_sound;
+        case MENU_Z80:
+            edit_settings.z80_enabled = !edit_settings.z80_enabled;
             break;
             
-        case MENU_DAC_SOUND:
-            edit_settings.dac_sound = !edit_settings.dac_sound;
+        case MENU_AUDIO:
+            edit_settings.audio_enabled = !edit_settings.audio_enabled;
+            break;
+            
+        case MENU_FM_SOUND:
+            if (edit_settings.audio_enabled) {
+                edit_settings.fm_sound = !edit_settings.fm_sound;
+            }
+            break;
+            
+        case MENU_CHANNELS:
+            // Handled separately - opens submenu
             break;
             
         case MENU_CRT_EFFECT:
@@ -329,6 +381,14 @@ static void change_setting(menu_item_t item, int direction) {
             }
             break;
             
+        case MENU_FRAMESKIP:
+            if (direction < 0 && edit_settings.frameskip > 0) {
+                edit_settings.frameskip--;
+            } else if (direction > 0 && edit_settings.frameskip < FRAMESKIP_MAX_LEVEL) {
+                edit_settings.frameskip++;
+            }
+            break;
+            
         default:
             break;
     }
@@ -338,6 +398,8 @@ static void change_setting(menu_item_t item, int direction) {
 static bool is_selectable(menu_item_t item) {
     if (item == MENU_SEPARATOR) return false;
     if (item == MENU_CRT_DIM && !edit_settings.crt_effect) return false;
+    if (item == MENU_FM_SOUND && !edit_settings.audio_enabled) return false;
+    if (item == MENU_CHANNELS && !edit_settings.audio_enabled) return false;
     return true;
 }
 
@@ -350,6 +412,209 @@ static int get_next_selectable(int current, int direction) {
         if (next >= MENU_ITEM_COUNT) next = 0;
     } while (!is_selectable((menu_item_t)next) && next != current);
     return next;
+}
+
+//=============================================================================
+// Channel Submenu
+//=============================================================================
+
+static const char* get_channel_label(channel_menu_item_t item) {
+    switch (item) {
+        case CHAN_FM1:       return "FM CHANNEL 1";
+        case CHAN_FM2:       return "FM CHANNEL 2";
+        case CHAN_FM3:       return "FM CHANNEL 3";
+        case CHAN_FM4:       return "FM CHANNEL 4";
+        case CHAN_FM5:       return "FM CHANNEL 5";
+        case CHAN_FM6:       return "FM CHANNEL 6 / DAC";
+        case CHAN_PSG:       return "PSG";
+        case CHAN_SEPARATOR: return "";
+        case CHAN_BACK:      return "BACK";
+        default:             return "";
+    }
+}
+
+static void get_channel_value(channel_menu_item_t item, char *buf, size_t size) {
+    switch (item) {
+        case CHAN_FM1:
+        case CHAN_FM2:
+        case CHAN_FM3:
+        case CHAN_FM4:
+        case CHAN_FM5:
+        case CHAN_FM6:
+        case CHAN_PSG:
+            snprintf(buf, size, "< %s >", CHANNEL_ENABLED(edit_settings.channel_mask, item) ? "ON" : "OFF");
+            break;
+        default:
+            buf[0] = '\0';
+            break;
+    }
+}
+
+static bool is_channel_selectable(channel_menu_item_t item) {
+    return item != CHAN_SEPARATOR;
+}
+
+static int get_next_channel_selectable(int current, int direction) {
+    int next = current;
+    do {
+        next += direction;
+        if (next < 0) next = CHAN_ITEM_COUNT - 1;
+        if (next >= CHAN_ITEM_COUNT) next = 0;
+    } while (!is_channel_selectable((channel_menu_item_t)next) && next != current);
+    return next;
+}
+
+static void draw_channel_menu(uint8_t *screen, int selected) {
+    // Clear screen
+    fill_rect(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK);
+    
+    // Draw title
+    const char *title = "AUDIO CHANNELS";
+    int title_width = (int)strlen(title) * FONT_WIDTH;
+    int title_x = (SCREEN_WIDTH - title_width) / 2;
+    draw_text(screen, title_x, MENU_TITLE_Y, title, COLOR_WHITE);
+    
+    // Draw separator under title
+    draw_hline(screen, 40, MENU_TITLE_Y + FONT_HEIGHT + 4, SCREEN_WIDTH - 80, COLOR_GRAY);
+    
+    // Draw menu items
+    int y = MENU_START_Y;
+    char value_buf[32];
+    
+    for (int i = 0; i < CHAN_ITEM_COUNT; i++) {
+        channel_menu_item_t item = (channel_menu_item_t)i;
+        
+        if (item == CHAN_SEPARATOR) {
+            draw_hline(screen, 40, y + LINE_HEIGHT / 2, SCREEN_WIDTH - 80, COLOR_GRAY);
+            y += LINE_HEIGHT;
+            continue;
+        }
+        
+        bool is_selected = (i == selected);
+        bool is_enabled = is_channel_selectable(item);
+        
+        uint8_t label_color = is_selected ? COLOR_YELLOW : (is_enabled ? COLOR_WHITE : COLOR_GRAY);
+        uint8_t value_color = is_selected ? COLOR_YELLOW : COLOR_WHITE;
+        
+        if (is_selected) {
+            draw_text(screen, MENU_X - 12, y, ">", COLOR_YELLOW);
+        }
+        
+        const char *label = get_channel_label(item);
+        draw_text(screen, MENU_X, y, label, label_color);
+        
+        get_channel_value(item, value_buf, sizeof(value_buf));
+        if (value_buf[0]) {
+            int value_width = (int)strlen(value_buf) * FONT_WIDTH;
+            int value_x = SCREEN_WIDTH - MENU_X - value_width;
+            if (!is_enabled) value_color = COLOR_GRAY;
+            draw_text(screen, value_x, y, value_buf, value_color);
+        }
+        
+        y += LINE_HEIGHT;
+    }
+    
+    // Help text
+    const char *help = "A: TOGGLE  B: BACK";
+    int help_width = (int)strlen(help) * FONT_WIDTH;
+    int help_x = (SCREEN_WIDTH - help_width) / 2;
+    draw_text(screen, help_x, SCREEN_HEIGHT - 20, help, COLOR_GRAY);
+}
+
+// Show channel submenu, returns true if user pressed Back
+static bool show_channel_submenu(uint8_t *screen_buffer) {
+    int selected = 0;
+    uint32_t prev_buttons = 0;
+    uint32_t hold_counter = 0;
+    const uint32_t REPEAT_DELAY = 10;
+    const uint32_t REPEAT_RATE = 3;
+    
+    draw_channel_menu(screen_buffer, selected);
+    
+    // Wait for A button release to prevent leaking into first menu item
+    while (true) {
+        nespad_read();
+        if (!(nespad_state & (DPAD_A | DPAD_START))) break;
+        sleep_ms(20);
+    }
+    prev_buttons = DPAD_A | DPAD_START;  // Consider them as "just released"
+    
+    while (true) {
+        nespad_read();
+        uint32_t buttons = nespad_state;
+        
+#ifdef USB_HID_ENABLED
+        usbhid_task();
+        if (usbhid_gamepad_connected()) {
+            usbhid_gamepad_state_t gp;
+            usbhid_get_gamepad_state(&gp);
+            if (gp.dpad & 0x01) buttons |= DPAD_UP;
+            if (gp.dpad & 0x02) buttons |= DPAD_DOWN;
+            if (gp.dpad & 0x04) buttons |= DPAD_LEFT;
+            if (gp.dpad & 0x08) buttons |= DPAD_RIGHT;
+            if (gp.buttons & 0x01) buttons |= DPAD_A;
+            if (gp.buttons & 0x02) buttons |= DPAD_B;
+        }
+#endif
+        
+        uint32_t buttons_pressed = buttons & ~prev_buttons;
+        bool up_repeat = false, down_repeat = false;
+        
+        if (buttons & (DPAD_UP | DPAD_DOWN)) {
+            hold_counter++;
+            if (hold_counter > REPEAT_DELAY) {
+                if ((hold_counter - REPEAT_DELAY) % REPEAT_RATE == 0) {
+                    if (buttons & DPAD_UP) up_repeat = true;
+                    if (buttons & DPAD_DOWN) down_repeat = true;
+                }
+            }
+        } else {
+            hold_counter = 0;
+        }
+        
+        prev_buttons = buttons;
+        bool needs_redraw = false;
+        
+        // Navigation
+        if ((buttons_pressed & DPAD_UP) || up_repeat) {
+            selected = get_next_channel_selectable(selected, -1);
+            needs_redraw = true;
+        }
+        if ((buttons_pressed & DPAD_DOWN) || down_repeat) {
+            selected = get_next_channel_selectable(selected, 1);
+            needs_redraw = true;
+        }
+        
+        // Toggle or select
+        if (buttons_pressed & (DPAD_A | DPAD_LEFT | DPAD_RIGHT)) {
+            channel_menu_item_t item = (channel_menu_item_t)selected;
+            if (item == CHAN_BACK) {
+                sleep_ms(100);
+                return true;
+            } else if (item >= CHAN_FM1 && item <= CHAN_PSG) {
+                // Toggle channel using bitmask
+                bool current = CHANNEL_ENABLED(edit_settings.channel_mask, item);
+                edit_settings.channel_mask = CHANNEL_SET(edit_settings.channel_mask, item, !current);
+                // Sync dac_sound with channel 6
+                if (item == CHAN_FM6) {
+                    edit_settings.dac_sound = CHANNEL_ENABLED(edit_settings.channel_mask, CHAN_FM6);
+                }
+                needs_redraw = true;
+            }
+        }
+        
+        // B = back
+        if (buttons_pressed & DPAD_B) {
+            sleep_ms(100);
+            return true;
+        }
+        
+        if (needs_redraw) {
+            draw_channel_menu(screen_buffer, selected);
+        }
+        
+        sleep_ms(50);
+    }
 }
 
 // Draw the entire settings menu
@@ -461,6 +726,10 @@ void settings_load(void) {
     g_settings.dac_sound = true;
     g_settings.crt_effect = false;
     g_settings.crt_dim = 60;
+    g_settings.z80_enabled = true;
+    g_settings.audio_enabled = true;
+    g_settings.channel_mask = 0x7F;  // All channels on
+    g_settings.frameskip = 3;  // Default: high
     
     FRESULT res = f_open(&file, "/genesis/settings.ini", FA_READ);
     if (res != FR_OK) {
@@ -485,11 +754,14 @@ void settings_load(void) {
                 g_settings.psram_freq = (uint16_t)freq;
             }
         }
+        else if (parse_ini_line(line, "z80", value, sizeof(value))) {
+            g_settings.z80_enabled = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
+        }
+        else if (parse_ini_line(line, "audio", value, sizeof(value))) {
+            g_settings.audio_enabled = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
+        }
         else if (parse_ini_line(line, "fm_sound", value, sizeof(value))) {
             g_settings.fm_sound = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
-        }
-        else if (parse_ini_line(line, "dac_sound", value, sizeof(value))) {
-            g_settings.dac_sound = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
         }
         else if (parse_ini_line(line, "crt_effect", value, sizeof(value))) {
             g_settings.crt_effect = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
@@ -500,6 +772,41 @@ void settings_load(void) {
                 g_settings.crt_dim = (uint8_t)dim;
             }
         }
+        else if (parse_ini_line(line, "channel_1", value, sizeof(value))) {
+            bool en = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
+            g_settings.channel_mask = CHANNEL_SET(g_settings.channel_mask, 0, en);
+        }
+        else if (parse_ini_line(line, "channel_2", value, sizeof(value))) {
+            bool en = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
+            g_settings.channel_mask = CHANNEL_SET(g_settings.channel_mask, 1, en);
+        }
+        else if (parse_ini_line(line, "channel_3", value, sizeof(value))) {
+            bool en = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
+            g_settings.channel_mask = CHANNEL_SET(g_settings.channel_mask, 2, en);
+        }
+        else if (parse_ini_line(line, "channel_4", value, sizeof(value))) {
+            bool en = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
+            g_settings.channel_mask = CHANNEL_SET(g_settings.channel_mask, 3, en);
+        }
+        else if (parse_ini_line(line, "channel_5", value, sizeof(value))) {
+            bool en = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
+            g_settings.channel_mask = CHANNEL_SET(g_settings.channel_mask, 4, en);
+        }
+        else if (parse_ini_line(line, "channel_6", value, sizeof(value))) {
+            bool en = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
+            g_settings.channel_mask = CHANNEL_SET(g_settings.channel_mask, 5, en);
+            g_settings.dac_sound = en;  // Sync dac_sound
+        }
+        else if (parse_ini_line(line, "psg", value, sizeof(value))) {
+            bool en = (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0);
+            g_settings.channel_mask = CHANNEL_SET(g_settings.channel_mask, 6, en);
+        }
+        else if (parse_ini_line(line, "frameskip", value, sizeof(value))) {
+            int level = atoi(value);
+            if (level >= 0 && level <= FRAMESKIP_MAX_LEVEL) {
+                g_settings.frameskip = (uint8_t)level;
+            }
+        }
     }
     
     f_close(&file);
@@ -508,7 +815,7 @@ void settings_load(void) {
 bool settings_save(void) {
     FIL file;
     UINT bw;
-    char buf[256];
+    char buf[512];
     
     // Ensure genesis directory exists
     f_mkdir("/genesis");
@@ -525,16 +832,36 @@ bool settings_save(void) {
         "\n"
         "cpu_freq = %d\n"
         "psram_freq = %d\n"
+        "z80 = %s\n"
+        "audio = %s\n"
         "fm_sound = %s\n"
-        "dac_sound = %s\n"
         "crt_effect = %s\n"
-        "crt_dim = %d\n",
+        "crt_dim = %d\n"
+        "frameskip = %d\n"
+        "\n"
+        "; Audio Channels\n"
+        "channel_1 = %s\n"
+        "channel_2 = %s\n"
+        "channel_3 = %s\n"
+        "channel_4 = %s\n"
+        "channel_5 = %s\n"
+        "channel_6 = %s\n"
+        "psg = %s\n",
         g_settings.cpu_freq,
         g_settings.psram_freq,
+        g_settings.z80_enabled ? "on" : "off",
+        g_settings.audio_enabled ? "on" : "off",
         g_settings.fm_sound ? "on" : "off",
-        g_settings.dac_sound ? "on" : "off",
         g_settings.crt_effect ? "on" : "off",
-        g_settings.crt_dim);
+        g_settings.crt_dim,
+        g_settings.frameskip,
+        CHANNEL_ENABLED(g_settings.channel_mask, 0) ? "on" : "off",
+        CHANNEL_ENABLED(g_settings.channel_mask, 1) ? "on" : "off",
+        CHANNEL_ENABLED(g_settings.channel_mask, 2) ? "on" : "off",
+        CHANNEL_ENABLED(g_settings.channel_mask, 3) ? "on" : "off",
+        CHANNEL_ENABLED(g_settings.channel_mask, 4) ? "on" : "off",
+        CHANNEL_ENABLED(g_settings.channel_mask, 5) ? "on" : "off",
+        CHANNEL_ENABLED(g_settings.channel_mask, 6) ? "on" : "off");
     
     res = f_write(&file, buf, strlen(buf), &bw);
     f_close(&file);
@@ -542,28 +869,56 @@ bool settings_save(void) {
     return (res == FR_OK && bw == strlen(buf));
 }
 
-// External audio control flags from main.c
+// External audio control flags from main.c and ym2612.c
 extern bool sn76489_enabled;
 extern bool ym2612_enabled;
 extern bool ym2612_fm_enabled;
 extern bool ym2612_dac_enabled;
+extern bool ym2612_channel_enabled[6];  // Per-channel mute flags
+
+// External Z80 control
+extern bool z80_enabled;
+
+// External master audio control
+extern bool audio_enabled;
 
 // External CRT control from HDMI.c
 extern void graphics_set_crt_effect(bool enabled, uint8_t dim_percent);
 
+// External frameskip control from main.c
+extern void set_frameskip_level(uint8_t level);
+
 void settings_apply_runtime(void) {
     // Apply settings that can be changed without restart
     
-    // Audio settings
-    // FM SOUND controls FM channels 1-6 (when not in DAC mode)
-    // DAC SOUND controls DAC samples (channel 6 in DAC mode) and PSG
-    ym2612_enabled = g_settings.fm_sound || g_settings.dac_sound;  // Enable chip if either is on
-    ym2612_fm_enabled = g_settings.fm_sound;   // FM channels mute control
-    ym2612_dac_enabled = g_settings.dac_sound; // DAC mute control
-    sn76489_enabled = g_settings.dac_sound;    // PSG follows DAC setting
+    // Master audio control - when disabled, skip all audio generation
+    audio_enabled = g_settings.audio_enabled;
+    
+    if (!g_settings.audio_enabled) {
+        // Audio disabled - mute everything for max performance
+        ym2612_enabled = false;
+        sn76489_enabled = false;
+    } else {
+        // Audio enabled - apply individual channel settings
+        ym2612_enabled = true;
+        ym2612_fm_enabled = g_settings.fm_sound;
+        ym2612_dac_enabled = CHANNEL_ENABLED(g_settings.channel_mask, 5);  // Channel 6
+        sn76489_enabled = CHANNEL_ENABLED(g_settings.channel_mask, 6);     // PSG
+        
+        // Apply per-channel mute settings
+        for (int i = 0; i < 6; i++) {
+            ym2612_channel_enabled[i] = CHANNEL_ENABLED(g_settings.channel_mask, i);
+        }
+    }
+    
+    // Z80 control
+    z80_enabled = g_settings.z80_enabled;
     
     // CRT settings
     graphics_set_crt_effect(g_settings.crt_effect, g_settings.crt_dim);
+    
+    // Frameskip
+    set_frameskip_level(g_settings.frameskip);
 }
 
 settings_result_t settings_menu_show(uint8_t *screen_buffer) {
@@ -689,6 +1044,14 @@ settings_result_t settings_menu_show_with_restore(uint8_t *screen_buffer, uint8_
                     
                 case MENU_RESTART:
                     return SETTINGS_RESULT_RESTART;
+                    
+                case MENU_CHANNELS:
+                    // Open channel submenu
+                    if (edit_settings.audio_enabled) {
+                        show_channel_submenu(screen_buffer);
+                        draw_settings_menu(screen_buffer, selected);
+                    }
+                    break;
                     
                 case MENU_CANCEL: {
                     // Wait for all buttons to be released for multiple consecutive reads

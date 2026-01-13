@@ -669,6 +669,9 @@ static YM2612 ym2612;
 bool ym2612_fm_enabled = true;   /* Mute FM channels 1-6 when false */
 bool ym2612_dac_enabled = true;  /* Mute DAC output when false */
 
+/* Per-channel mute flags (channels 0-5 = FM channels 1-6) */
+bool ym2612_channel_enabled[6] = {true, true, true, true, true, true};
+
 /* current chip state */
 static INT32  m2,c1,c2;   /* Phase Modulation input for operators 2,3,4 */
 static INT32  mem;        /* one sample delay memory */
@@ -2176,7 +2179,15 @@ static inline void YM2612Update(int16_t *buffer, int length)
     out_fm[5] = CLAMP_14BIT(out_fm[5]);
     #undef CLAMP_14BIT
     
-    /* Apply FM/DAC mute controls before mixing */
+    /* Apply per-channel mute controls */
+    if (!ym2612_channel_enabled[0]) out_fm[0] = 0;
+    if (!ym2612_channel_enabled[1]) out_fm[1] = 0;
+    if (!ym2612_channel_enabled[2]) out_fm[2] = 0;
+    if (!ym2612_channel_enabled[3]) out_fm[3] = 0;
+    if (!ym2612_channel_enabled[4]) out_fm[4] = 0;
+    if (!ym2612_channel_enabled[5]) out_fm[5] = 0;
+    
+    /* Apply FM/DAC global mute controls (overrides per-channel if needed) */
     if (!ym2612_fm_enabled) {
       /* Mute FM channels 0-4, and channel 5 if in FM mode */
       out_fm[0] = 0;

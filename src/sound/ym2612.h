@@ -34,6 +34,9 @@ extern volatile int ym2612_clock;
 extern bool ym2612_fm_enabled;   /* Mute FM channels 1-6 when false */
 extern bool ym2612_dac_enabled;  /* Mute DAC output when false */
 
+/* Per-channel mute flags (channels 0-5 = FM channels 1-6) */
+extern bool ym2612_channel_enabled[6];
+
 extern void YM2612Init(void);
 extern void YM2612Config(unsigned char type);  /* Genesis-Plus-GX: chip type instead of dac_bits */
 extern void YM2612ResetChip(void);

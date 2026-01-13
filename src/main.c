@@ -94,6 +94,31 @@
 #define FRAMESKIP_LEVEL 3
 #endif
 
+// Frameskip patterns: [len, mask] for each level
+// Level 0: render every frame (60fps)
+// Level 1: render 5/6 (50fps)
+// Level 2: render 4/6 (40fps)
+// Level 3: render 3/6 (30fps) - default
+// Level 4: render 2/6 (20fps)
+static const uint8_t frameskip_patterns[5][2] = {
+    {1, 0x01},  // 0: none - render every frame
+    {6, 0x1F},  // 1: low - render frames 0-4, skip frame 5
+    {6, 0x15},  // 2: medium - render frames 0,2,4 (4/6)
+    {6, 0x09},  // 3: high - render frames 0,3 (3/6 = 30fps)
+    {6, 0x05},  // 4: extreme - render frames 0,2 (2/6 = 20fps)
+};
+
+// Runtime frameskip settings (set from g_settings.frameskip)
+static uint32_t frameskip_pattern_len = 6;
+static uint32_t frameskip_pattern_mask = 0x09;  // Default: level 3
+
+// Set frameskip level at runtime
+void set_frameskip_level(uint8_t level) {
+    if (level > 4) level = 3;  // Clamp to valid range
+    frameskip_pattern_len = frameskip_patterns[level][0];
+    frameskip_pattern_mask = frameskip_patterns[level][1];
+}
+
 #if FRAMESKIP_LEVEL == 0
   #define FRAMESKIP_PATTERN_LEN 1u
   #define FRAMESKIP_PATTERN_MASK 0x01u  // render every frame
@@ -183,6 +208,8 @@ static uint64_t profile_section_start = 0;
   profile_stats.frame_count++; \
 } while(0)
 
+static const char* frameskip_level_names[] = {"NONE", "LOW", "MEDIUM", "HIGH", "EXTREME"};
+
 static void print_profiling_stats(void) {
     if (profile_stats.frame_count == 0) return;
     
@@ -193,6 +220,25 @@ static void print_profiling_stats(void) {
     uint64_t other = (total > tracked) ? (total - tracked) : 0;
     
     LOG("\n=== Profiling Stats (avg per frame over %u frames) ===\n", profile_stats.frame_count);
+    LOG("--- Active Settings ---\n");
+    LOG("CPU: %u MHz, PSRAM: %u MHz\n", g_settings.cpu_freq, g_settings.psram_freq);
+    LOG("Frameskip: %s, CRT: %s (%u%%)\n", 
+        frameskip_level_names[g_settings.frameskip],
+        g_settings.crt_effect ? "ON" : "OFF",
+        g_settings.crt_dim);
+    LOG("Audio: %s, FM: %s, Z80: %s\n",
+        g_settings.audio_enabled ? "ON" : "OFF",
+        g_settings.fm_sound ? "ON" : "OFF",
+        g_settings.z80_enabled ? "ON" : "OFF");
+    LOG("Channels: FM1-%c FM2-%c FM3-%c FM4-%c FM5-%c DAC-%c PSG-%c\n",
+        CHANNEL_ENABLED(g_settings.channel_mask, 0) ? 'Y' : 'N',
+        CHANNEL_ENABLED(g_settings.channel_mask, 1) ? 'Y' : 'N',
+        CHANNEL_ENABLED(g_settings.channel_mask, 2) ? 'Y' : 'N',
+        CHANNEL_ENABLED(g_settings.channel_mask, 3) ? 'Y' : 'N',
+        CHANNEL_ENABLED(g_settings.channel_mask, 4) ? 'Y' : 'N',
+        CHANNEL_ENABLED(g_settings.channel_mask, 5) ? 'Y' : 'N',
+        CHANNEL_ENABLED(g_settings.channel_mask, 6) ? 'Y' : 'N');
+    LOG("--- Timing Breakdown ---\n");
     LOG("M68K execution:  %6lu us (%3d%%)\n", 
         (unsigned long)(profile_stats.m68k_time / profile_stats.frame_count),
         (int)((profile_stats.m68k_time * 100) / total));
@@ -308,6 +354,10 @@ bool sn76489_enabled = true;  // PSG/DAC sound
 bool ym2612_enabled = true;   // FM sound
 extern bool ym2612_fm_enabled;   // FM channels mute (in ym2612.c)
 extern bool ym2612_dac_enabled;  // DAC mute (in ym2612.c)
+extern bool ym2612_channel_enabled[6];  // Per-channel mute (in ym2612.c)
+
+// Z80 enabled flag
+bool z80_enabled = true;
 
 // Timing
 int system_clock;
@@ -699,8 +749,9 @@ static void __time_critical_func(emulation_loop)(void) {
 
     #if ENABLE_CONSTANT_FRAMESKIP
         // Deterministic render/skip pattern to avoid performance oscillations.
-        const uint32_t pat_idx = (FRAMESKIP_PATTERN_LEN ? (frame_num % FRAMESKIP_PATTERN_LEN) : 0u);
-        render_this_frame = ((FRAMESKIP_PATTERN_MASK >> pat_idx) & 1u) != 0u;
+        // Uses runtime-configurable frameskip_pattern_len and frameskip_pattern_mask
+        const uint32_t pat_idx = (frameskip_pattern_len ? (frame_num % frameskip_pattern_len) : 0u);
+        render_this_frame = ((frameskip_pattern_mask >> pat_idx) & 1u) != 0u;
     #endif
 #if ENABLE_ADAPTIVE_FRAMESKIP
         // If we have backlog, prefer skipping render (saves render_cost_ema_us).
@@ -1093,14 +1144,34 @@ int main(void) {
     // CRT effect can be changed at runtime
     graphics_set_crt_effect(g_settings.crt_effect, g_settings.crt_dim);
     
+    // Apply Z80 setting
+    z80_enabled = g_settings.z80_enabled;
+    LOG("Z80: %s\n", z80_enabled ? "enabled" : "disabled");
+    
     // Apply audio settings
-    // FM SOUND controls FM channels, DAC SOUND controls DAC samples and PSG
-    // YM2612 chip must run if either FM or DAC is enabled
-    ym2612_enabled = g_settings.fm_sound || g_settings.dac_sound;
-    ym2612_fm_enabled = g_settings.fm_sound;
-    ym2612_dac_enabled = g_settings.dac_sound;
-    sn76489_enabled = g_settings.dac_sound;
-    LOG("Audio: FM=%s, DAC=%s\n", g_settings.fm_sound ? "on" : "off", g_settings.dac_sound ? "on" : "off");
+    audio_enabled = g_settings.audio_enabled;
+    
+    if (!g_settings.audio_enabled) {
+        // Audio disabled - mute everything for max performance
+        ym2612_enabled = false;
+        sn76489_enabled = false;
+        LOG("Audio: DISABLED (max performance mode)\n");
+    } else {
+        // Audio enabled - apply individual channel settings
+        ym2612_enabled = true;
+        ym2612_fm_enabled = g_settings.fm_sound;
+        ym2612_dac_enabled = CHANNEL_ENABLED(g_settings.channel_mask, 5);  // Channel 6
+        sn76489_enabled = CHANNEL_ENABLED(g_settings.channel_mask, 6);     // PSG
+        
+        // Apply per-channel mute settings
+        for (int i = 0; i < 6; i++) {
+            ym2612_channel_enabled[i] = CHANNEL_ENABLED(g_settings.channel_mask, i);
+        }
+        LOG("Audio: FM=%s, Channels=0x%02X, PSG=%s\n", 
+            g_settings.fm_sound ? "on" : "off",
+            g_settings.channel_mask & 0x3F,
+            CHANNEL_ENABLED(g_settings.channel_mask, 6) ? "on" : "off");
+    }
     
     // Check if CPU/PSRAM frequencies need to change
     // If they differ from compile-time values, we need to reconfigure

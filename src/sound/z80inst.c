@@ -108,7 +108,16 @@ void z80_pulse_reset() {
   z80_bank_cache_lru = 0;
 }
 
+/* External Z80 enable flag from main.c */
+extern bool z80_enabled;
+
 void z80_run(int target) {
+
+  // Skip Z80 execution if disabled (for performance)
+  if (!z80_enabled) {
+    zclk = target;  // Advance clock without execution
+    return;
+  }
 
   // we are in advance,nothind to do
   current_timeslice = 0;

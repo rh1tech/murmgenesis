@@ -16,7 +16,15 @@ typedef struct {
     bool dac_sound;         // DAC sound: true (default), false
     bool crt_effect;        // CRT scanlines: false (default), true
     uint8_t crt_dim;        // CRT dim percentage: 10-90, default 60
+    bool z80_enabled;       // Z80 CPU: true (default), false
+    bool audio_enabled;     // Master audio: true (default), false
+    uint8_t channel_mask;   // Channel enable bitmask: bits 0-5 = FM 1-6, bit 6 = PSG
+    uint8_t frameskip;      // Frameskip level: 0=none, 1=low, 2=medium, 3=high (default), 4=extreme
 } settings_t;
+
+// Helper macros for channel_mask
+#define CHANNEL_ENABLED(mask, ch) (((mask) >> (ch)) & 1)
+#define CHANNEL_SET(mask, ch, en) ((en) ? ((mask) | (1 << (ch))) : ((mask) & ~(1 << (ch))))
 
 // Global settings instance (loaded at startup)
 extern settings_t g_settings;
