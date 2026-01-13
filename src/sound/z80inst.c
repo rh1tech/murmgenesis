@@ -46,6 +46,14 @@ static int initialized = 0;
 
 unsigned char *Z80_RAM;
 
+/* Z80 ROM bank cache - 64KB (2 banks) cached in fast SRAM 
+ * This allows games that switch between two banks to stay cached */
+#define Z80_BANK_CACHE_SIZE 0x8000  /* 32KB per bank */
+#define Z80_BANK_CACHE_COUNT 2      /* Number of cached banks */
+static uint8_t __attribute__((aligned(4))) z80_bank_cache[Z80_BANK_CACHE_COUNT][Z80_BANK_CACHE_SIZE];
+static int z80_bank_cache_tags[Z80_BANK_CACHE_COUNT] = {-1, -1};  /* LRU cache tags */
+static int z80_bank_cache_lru = 0;  /* Next slot to replace */
+
 /* Make cpu and current_timeslice globally accessible for assembly optimization */
 Z80 cpu;
 int current_timeslice = 0;
@@ -88,10 +96,16 @@ void z80_start() {
     reset_once=0;
     bus_ack=0;
     zclk=0;
+    z80_bank_cache_tags[0] = -1;  /* Invalidate cache on start */
+    z80_bank_cache_tags[1] = -1;
+    z80_bank_cache_lru = 0;
 }
 
 void z80_pulse_reset() {
   ResetZ80(&cpu);
+  z80_bank_cache_tags[0] = -1;  /* Invalidate cache on reset */
+  z80_bank_cache_tags[1] = -1;
+  z80_bank_cache_lru = 0;
 }
 
 void z80_run(int target) {
@@ -240,6 +254,40 @@ word z80_get_reg(int reg_i) {
  * Z80 Bank
  ********************************************/
 
+/* Invalidate the Z80 bank cache (call on reset or DMA) */
+void z80_bank_cache_invalidate(void) {
+    z80_bank_cache_tags[0] = -1;
+    z80_bank_cache_tags[1] = -1;
+    z80_bank_cache_lru = 0;
+}
+
+/* Find or allocate a cache slot for the given bank, returns slot index */
+static inline int z80_bank_cache_get_slot(int bank) {
+    /* Check if already cached */
+    if (z80_bank_cache_tags[0] == bank) return 0;
+    if (z80_bank_cache_tags[1] == bank) return 1;
+    
+    /* Cache miss - fill next slot (simple round-robin replacement) */
+    extern unsigned char* ROM_DATA;
+    unsigned int base_addr = bank << 15;
+    
+    /* Only cache if within ROM range (< 8MB) */
+    if (base_addr < 0x800000) {
+        int slot = z80_bank_cache_lru;
+        z80_bank_cache_lru = 1 - slot;  /* Toggle 0<->1 */
+        
+        /* Copy 32KB from ROM (PSRAM) to cache (SRAM) */
+        const uint32_t *src = (const uint32_t *)(ROM_DATA + base_addr);
+        uint32_t *dst = (uint32_t *)z80_bank_cache[slot];
+        for (int i = 0; i < Z80_BANK_CACHE_SIZE / 4; i++) {
+            dst[i] = src[i];
+        }
+        z80_bank_cache_tags[slot] = bank;
+        return slot;
+    }
+    return -1;  /* Not cacheable */
+}
+
 unsigned int zbankreg_mem_r8(unsigned int address)
 {
       z80_log(__FUNCTION__,"Z80 bank read pointer : %06x", Z80_BANK);
@@ -252,6 +300,7 @@ void zbankreg_mem_w8(unsigned int value) {
   Z80_BANK >>= 1;
   Z80_BANK |= (value & 1) << 8;
   z80_log(__FUNCTION__,"Z80 bank points to: %06x", Z80_BANK << 15);
+  /* No need to invalidate - 2-way cache handles bank switching */
   return;
 }
 
@@ -259,10 +308,21 @@ void zbankreg_mem_w8(unsigned int value) {
 unsigned int zbank_mem_r8(unsigned int address)
 {
     address &= 0x7FFF;
-    address |= (Z80_BANK << 15);
-
-    z80_log(__FUNCTION__,"Z80 bank read: %06x", address);
-    return m68k_read_memory_8(address);
+    
+    /* Check if we're reading from ROM (bank in ROM range) */
+    unsigned int full_addr = address | (Z80_BANK << 15);
+    if (full_addr < 0x800000) {
+        /* ROM read - use 2-way cache */
+        int slot = z80_bank_cache_get_slot(Z80_BANK);
+        if (slot >= 0) {
+            /* Read from cache with byte swap for big-endian ROM */
+            return z80_bank_cache[slot][address ^ 1];
+        }
+    }
+    
+    /* Non-ROM access (RAM mirror, etc) - use slow path */
+    z80_log(__FUNCTION__,"Z80 bank read: %06x", full_addr);
+    return m68k_read_memory_8(full_addr);
 }
 
 void zbank_mem_w8(unsigned int address, unsigned int value) {

@@ -68,6 +68,73 @@ unsigned char* ROM_DATA = NULL;
 unsigned char M68K_RAM[MAX_RAM_SIZE];    // 68K RAM
 #endif
 
+/*******************************************************************************
+ * M68K ROM Page Cache - caches hot ROM pages in fast SRAM
+ * Uses 64KB (16 x 4KB pages) with direct-mapped addressing
+ ******************************************************************************/
+#define ROM_CACHE_PAGE_SIZE     4096    /* 4KB per page */
+#define ROM_CACHE_PAGE_SHIFT    12      /* log2(4096) */
+#define ROM_CACHE_NUM_PAGES     16      /* 16 pages = 64KB total */
+#define ROM_CACHE_PAGE_MASK     (ROM_CACHE_NUM_PAGES - 1)
+
+static uint8_t __attribute__((aligned(4))) rom_page_cache[ROM_CACHE_NUM_PAGES][ROM_CACHE_PAGE_SIZE];
+static uint32_t rom_cache_tags[ROM_CACHE_NUM_PAGES];  /* Upper address bits for validation */
+static uint8_t rom_cache_valid[ROM_CACHE_NUM_PAGES];  /* Valid flags */
+
+/* Initialize ROM cache (call on game load) */
+void rom_cache_init(void) {
+    for (int i = 0; i < ROM_CACHE_NUM_PAGES; i++) {
+        rom_cache_valid[i] = 0;
+    }
+}
+
+/* Get cached ROM byte - returns from cache or fills cache line */
+static inline uint8_t rom_cache_read_8(uint32_t address) {
+    uint32_t page_num = address >> ROM_CACHE_PAGE_SHIFT;
+    uint32_t cache_slot = page_num & ROM_CACHE_PAGE_MASK;
+    uint32_t page_offset = address & (ROM_CACHE_PAGE_SIZE - 1);
+    
+    /* Check cache hit */
+    if (rom_cache_valid[cache_slot] && rom_cache_tags[cache_slot] == page_num) {
+        return rom_page_cache[cache_slot][page_offset ^ 1];  /* Byte swap for big-endian */
+    }
+    
+    /* Cache miss - fill the page */
+    uint32_t page_base = page_num << ROM_CACHE_PAGE_SHIFT;
+    const uint32_t *src = (const uint32_t *)(ROM_DATA + page_base);
+    uint32_t *dst = (uint32_t *)rom_page_cache[cache_slot];
+    for (int i = 0; i < ROM_CACHE_PAGE_SIZE / 4; i++) {
+        dst[i] = src[i];
+    }
+    rom_cache_tags[cache_slot] = page_num;
+    rom_cache_valid[cache_slot] = 1;
+    
+    return rom_page_cache[cache_slot][page_offset ^ 1];
+}
+
+/* Get cached ROM word (16-bit) */
+static inline uint16_t rom_cache_read_16(uint32_t address) {
+    uint32_t page_num = address >> ROM_CACHE_PAGE_SHIFT;
+    uint32_t cache_slot = page_num & ROM_CACHE_PAGE_MASK;
+    uint32_t page_offset = address & (ROM_CACHE_PAGE_SIZE - 1);
+    
+    /* Check cache hit */
+    if (rom_cache_valid[cache_slot] && rom_cache_tags[cache_slot] == page_num) {
+        return *(uint16_t *)&rom_page_cache[cache_slot][page_offset];
+    }
+    
+    /* Cache miss - fill the page */
+    uint32_t page_base = page_num << ROM_CACHE_PAGE_SHIFT;
+    const uint32_t *src = (const uint32_t *)(ROM_DATA + page_base);
+    uint32_t *dst = (uint32_t *)rom_page_cache[cache_slot];
+    for (int i = 0; i < ROM_CACHE_PAGE_SIZE / 4; i++) {
+        dst[i] = src[i];
+    }
+    rom_cache_tags[cache_slot] = page_num;
+    rom_cache_valid[cache_slot] = 1;
+    
+    return *(uint16_t *)&rom_page_cache[cache_slot][page_offset];
+}
 
 // Setup Z80 Memory
 unsigned char ZRAM[MAX_Z80_RAM_SIZE]; // Z80 RAM
@@ -97,6 +164,9 @@ void load_cartridge()
     z80_set_memory(ZRAM);
 
     z80_pulse_reset();
+    
+    // Initialize ROM cache
+    rom_cache_init();
 
     set_region();
 
@@ -113,6 +183,9 @@ void load_cartridge(unsigned char *buffer, size_t size)
     // Set Z80 Memory as ZRAM
     z80_set_memory(ZRAM);
     z80_pulse_reset();
+    
+    // Initialize ROM cache
+    rom_cache_init();
 
     // Copy file contents to CPU ROM memory
     memcpy(ROM_DATA, buffer, size);
@@ -385,7 +458,7 @@ static inline __attribute__((always_inline)) unsigned int gwenesis_bus_read_memo
   
   /* ROM reads (0x000000 - 0x7FFFFF) - most common during gameplay */
   if (range < 0x80) {
-    return FETCH8ROM(address);
+    return rom_cache_read_8(address);
   }
   
   /* RAM reads (0xFF0000 - 0xFFFFFF) - second most common */
@@ -441,7 +514,7 @@ static inline __attribute__((always_inline)) unsigned int gwenesis_bus_read_memo
   
   /* ROM reads (0x000000 - 0x7FFFFF) - most common during gameplay */
   if (range < 0x80) {
-    return FETCH16ROM(address);
+    return rom_cache_read_16(address);
   }
   
   /* RAM reads (0xFF0000 - 0xFFFFFF) - second most common */
