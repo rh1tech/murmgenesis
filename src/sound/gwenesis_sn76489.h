@@ -3,9 +3,17 @@
 #define _GWENESIS_SN76489_H_
 
 /*
-    More testing is needed to find and confirm feedback patterns for
-    SN76489 variants and compatible chips.
+    SN76489 emulation based on Maxim's implementation
+    with improvements from Genesis Plus GX
+
+    Supports discrete and integrated chip variants
 */
+
+/* PSG chip type (from Genesis Plus GX) */
+enum {
+    PSG_DISCRETE = 0,  /* SN76489A discrete chip (original) */
+    PSG_INTEGRATED     /* ASIC integrated clone (later revisions) */
+};
 
 #undef uint8
 #undef uint16
@@ -38,6 +46,11 @@ typedef struct
     int WhiteNoiseFeedback;
     int divisor;
 
+    /* Chip type parameters (from Genesis Plus GX) */
+    int noiseShiftWidth;    /* 14 for discrete, 15 for integrated */
+    int noiseBitMask;       /* 0x6 for discrete, 0x9 for integrated */
+    int zeroFreqValue;      /* 0x400 for discrete, 0x1 for integrated */
+
     /* PSG registers: */
     UINT16 Registers[8];        /* Tone, vol x4 */
     int LatchedRegister;
@@ -57,7 +70,7 @@ extern volatile int sn76489_index;
 extern volatile int sn76489_clock;
 
 /* Function prototypes */
-void gwenesis_SN76489_Init( int PSGClockValue, int SamplingRate,int freq_divisor);
+void gwenesis_SN76489_Init(int PSGClockValue, int SamplingRate, int freq_divisor, int type);
 void gwenesis_SN76489_Reset();
 void gwenesis_SN76489_start();
 void gwenesis_SN76489_SetContext(uint8 *data);

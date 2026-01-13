@@ -377,13 +377,13 @@ static void genesis_init(void) {
     m68k_init();
     m68k_pulse_reset();
     
-    // Initialize YM2612
+    // Initialize YM2612 with Genesis-Plus-GX improvements
     YM2612Init();
     YM2612ResetChip();  // MUST call reset to clear all registers after init
-    YM2612Config(9);
+    YM2612Config(YM2612_DISCRETE);  // Use discrete chip emulation with ladder effect
     
-    // Initialize PSG
-    gwenesis_SN76489_Init(3579545, 888 * 60, AUDIO_FREQ_DIVISOR);
+    // Initialize PSG with Genesis-Plus-GX improvements
+    gwenesis_SN76489_Init(3579545, 888 * 60, AUDIO_FREQ_DIVISOR, PSG_INTEGRATED);
     gwenesis_SN76489_Reset();
     
     // Initialize VDP

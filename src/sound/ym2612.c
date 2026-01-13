@@ -671,6 +671,10 @@ static INT32  mem;        /* one sample delay memory */
 static INT32  out_fm[8];  /* outputs of working channels */
 static UINT32 bitmask;    /* working channels output bitmasking (DAC quantization) */
 
+/* chip type - from Genesis-Plus-GX (enum defined in ym2612.h) */
+static UINT32 op_mask[8][4];  /* operator output bitmasking (DAC quantization) */
+static int chip_type = YM2612_DISCRETE;
+
 /* mirror of all OPN registers */
 static uint8_t OPNREGS[512];
 
@@ -789,7 +793,7 @@ INLINE void FM_KEYOFF_CSM(FM_CH *CH , int s )
       {
         /* convert EG attenuation level */
         if (SLOT->ssgn ^ (SLOT->ssg&0x04))
-          SLOT->volume = (0x200 - SLOT->volume);
+          SLOT->volume = (0x200 - SLOT->volume) & MAX_ATT_INDEX;  /* Genesis-Plus-GX fix */
 
         /* force EG attenuation level */
         if (SLOT->volume >= 0x200)
@@ -848,11 +852,12 @@ INLINE void INTERNAL_TIMER_B(int step)
       if (ym2612.OPN.ST.mode & 0x08)
         ym2612.OPN.ST.status |= 0x02;
 
-      /* reload the counter */
-      if (ym2612.OPN.ST.TBL)
+      /* reload the counter - Genesis-Plus-GX fix for proper overflow handling */
+      do
+      {
         ym2612.OPN.ST.TBC += ym2612.OPN.ST.TBL;
-      else
-        ym2612.OPN.ST.TBC = ym2612.OPN.ST.TBL;
+      }
+      while (ym2612.OPN.ST.TBC <= 0);
     }
   }
 }
@@ -1473,74 +1478,69 @@ INLINE void refresh_fc_eg_chan(FM_CH *CH )
 
 #define volume_calc(OP) ((OP)->vol_out + (AM & (OP)->AMmask))
 
-/* C version of op_calc for debugging - disable assembly version */
-#if 1  /* Use C version to test for assembly bugs */
-INLINE signed int op_calc(UINT32 phase, unsigned int env, unsigned int pm)
+/* Genesis-Plus-GX op_calc with opmask for DAC quantization */
+INLINE signed int op_calc(UINT32 phase, unsigned int env, unsigned int pm, unsigned int opmask)
 {
-  UINT32 p;
-  /* Match assembly: ((phase >> SIN_BITS) + (pm >> 1)) & SIN_MASK */
-  p = (env<<3) + sin_tab[ ( (phase >> SIN_BITS) + (pm >> 1) ) & SIN_MASK ];
-  if (p >= TL_TAB_LEN) return 0;
-  return tl_tab[p];
+  UINT32 p = (env<<3) + sin_tab[ ( (phase >> SIN_BITS) + (pm >> 1) ) & SIN_MASK ];
+
+  if (p >= TL_TAB_LEN)
+    return 0;
+  return (tl_tab[p] & opmask);
 }
 
-INLINE signed int op_calc1(UINT32 phase, unsigned int env, unsigned int pm)
+INLINE signed int op_calc1(UINT32 phase, unsigned int env, unsigned int pm, unsigned int opmask)
 {
-  UINT32 p;
-  /* Match assembly: ((phase + pm) >> SIN_BITS) & SIN_MASK */
-  p = (env<<3) + sin_tab[ ( (phase + pm) >> SIN_BITS ) & SIN_MASK ];
-  if (p >= TL_TAB_LEN) return 0;
-  return tl_tab[p];
-}
-#else
-/* Assembly-optimized op_calc functions in ym2612_opt.S */
-extern signed int op_calc(UINT32 phase, unsigned int env, unsigned int pm);
-extern signed int op_calc1(UINT32 phase, unsigned int env, unsigned int pm);
-#endif
+  UINT32 p = (env<<3) + sin_tab[ ( ( phase >> SIN_BITS ) + pm ) & SIN_MASK ];
 
+  if (p >= TL_TAB_LEN)
+    return 0;
+  return (tl_tab[p] & opmask);
+}
+
+/* Genesis-Plus-GX chan_calc with op_mask for DAC quantization */
 INLINE void chan_calc(FM_CH *CH, int num)
 {
   do
   {
+    INT32 out = 0;
     UINT32 AM = ym2612.OPN.LFO_AM >> CH->ams;
     unsigned int eg_out = volume_calc(&CH->SLOT[SLOT1]);
+    UINT32 *mask = op_mask[CH->ALGO];
 
     m2 = c1 = c2 = mem = 0;
 
     *CH->mem_connect = CH->mem_value;  /* restore delayed sample (MEM) value to m2 or c2 */
+
+    if( eg_out < ENV_QUIET )  /* SLOT 1 */
     {
-      INT32 out = CH->op1_out[0] + CH->op1_out[1];
-      CH->op1_out[0] = CH->op1_out[1];
+      if (CH->FB < SIN_BITS)
+        out = (CH->op1_out[0] + CH->op1_out[1]) >> CH->FB;
 
-      if( !CH->connect1 ){
-        /* algorithm 5  */
-        mem = c1 = c2 = CH->op1_out[0];
-      }else{
-        /* other algorithms */
-        *CH->connect1 += CH->op1_out[0];
-      }
+      out = op_calc1(CH->SLOT[SLOT1].phase, eg_out, out, mask[0]);
+    }
 
-      CH->op1_out[1] = 0;
-      if( eg_out < ENV_QUIET )  /* SLOT 1 */
-      {
-        if (!CH->FB)
-          out=0;
+    CH->op1_out[0] = CH->op1_out[1];
+    CH->op1_out[1] = out;
 
-        CH->op1_out[1] = op_calc1(CH->SLOT[SLOT1].phase, eg_out, (out<<CH->FB) );
-      }
+    if( !CH->connect1 ){
+      /* algorithm 5  */
+      mem = c1 = c2 = out;
+    }else{
+      /* other algorithms */
+      *CH->connect1 = out;
     }
 
     eg_out = volume_calc(&CH->SLOT[SLOT3]);
     if( eg_out < ENV_QUIET )    /* SLOT 3 */
-      *CH->connect3 += op_calc(CH->SLOT[SLOT3].phase, eg_out, m2);
+      *CH->connect3 += op_calc(CH->SLOT[SLOT3].phase, eg_out, m2, mask[2]);
 
     eg_out = volume_calc(&CH->SLOT[SLOT2]);
     if( eg_out < ENV_QUIET )    /* SLOT 2 */
-      *CH->connect2 += op_calc(CH->SLOT[SLOT2].phase, eg_out, c1);
+      *CH->connect2 += op_calc(CH->SLOT[SLOT2].phase, eg_out, c1, mask[1]);
 
     eg_out = volume_calc(&CH->SLOT[SLOT4]);
     if( eg_out < ENV_QUIET )    /* SLOT 4 */
-      *CH->connect4 += op_calc(CH->SLOT[SLOT4].phase, eg_out, c2);
+      *CH->connect4 += op_calc(CH->SLOT[SLOT4].phase, eg_out, c2, mask[3]);
 
 
     /* store current MEM */
@@ -1810,20 +1810,20 @@ INLINE void OPNWriteReg(int r, int v)
         case 0:    /* 0xb0-0xb2 : FB,ALGO */
         {
           CH->ALGO = v&7;
-          CH->FB   = (v>>3)&7;
+          CH->FB   = SIN_BITS - ((v>>3)&7);  /* Genesis-Plus-GX: store as shift value */
           setup_connection( CH, c );
           break;
         }
         case 1:    /* 0xb4-0xb6 : L , R , AMS , PMS */
           /* b0-2 PMS */
-          CH->pms = (v & 7) * 16; // 32; /* CH->pms = PM depth * 32 (index in lfo_pm_table) */
+          CH->pms = (v & 7) * 32; /* CH->pms = PM depth * 32 (index in lfo_pm_table) */
 
           /* b4-5 AMS */
           CH->ams = lfo_ams_depth_shift[(v>>4) & 0x03];
 
           /* PAN :  b7 = L, b6 = R */
-        //  ym2612.OPN.pan[ c*2   ] = (v & 0x80) ? bitmask : 0;
-         // ym2612.OPN.pan[ c*2+1 ] = (v & 0x40) ? bitmask : 0;
+          ym2612.OPN.pan[ c*2   ] = (v & 0x80) ? 0xffffffff : 0;
+          ym2612.OPN.pan[ c*2+1 ] = (v & 0x40) ? 0xffffffff : 0;
           break;
       }
       break;
@@ -1970,6 +1970,14 @@ static void init_tables(void)
     }
   }
 
+  /* Genesis-Plus-GX: build default OP mask table */
+  for (i = 0;i < 8;i++)
+  {
+    for (d = 0;d < 4;d++)
+    {
+      op_mask[i][d] = 0xffffffff;
+    }
+  }
 }
 
 /* initialize ym2612 emulator */
@@ -2160,43 +2168,27 @@ static inline void YM2612Update(int16_t *buffer, int length)
     if (out_fm[5] > 8191) out_fm[5] = 8191;
     else if (out_fm[5] < -8192) out_fm[5] = -8192;
     
-    /* stereo DAC channels outputs mixing  */
-    #if 0
-    lt  = ((out_fm[0]) & ym2612.OPN.pan[0]);
-    rt  = ((out_fm[0]) & ym2612.OPN.pan[1]);
-    lt += ((out_fm[1]) & ym2612.OPN.pan[2]);
-    rt += ((out_fm[1]) & ym2612.OPN.pan[3]);
-    lt += ((out_fm[2]) & ym2612.OPN.pan[4]);
-    rt += ((out_fm[2]) & ym2612.OPN.pan[5]);
-    lt += ((out_fm[3]) & ym2612.OPN.pan[6]);
-    rt += ((out_fm[3]) & ym2612.OPN.pan[7]);
-    lt += ((out_fm[4]) & ym2612.OPN.pan[8]);
-    rt += ((out_fm[4]) & ym2612.OPN.pan[9]);
-    lt += ((out_fm[5]) & ym2612.OPN.pan[10]);
-    rt += ((out_fm[5]) & ym2612.OPN.pan[11]);
-    #endif
-    lt  = out_fm[0];
-   // rt  = out_fm[0];
-    lt += out_fm[1];
-   // rt += out_fm[1];
-    lt += out_fm[2];
-   // rt += out_fm[2];
-    lt += out_fm[3];
-   // rt += out_fm[3];
-    lt += out_fm[4];
-    //rt += out_fm[4];
-    lt += out_fm[5];
-   // rt += out_fm[5];
-
-    /* DEBUG: Test each channel individually - set to 1-6 to hear only that channel, 0 for all */
-    #define DEBUG_SOLO_CHANNEL 0  // 0=all, 1-6=solo that channel
-    #if DEBUG_SOLO_CHANNEL > 0
-    for (int ch = 0; ch < 6; ch++) {
-      if (ch != (DEBUG_SOLO_CHANNEL - 1)) out_fm[ch] = 0;
-    }
-    #endif
-    
+    /* Mix all channels (mono output for this platform) */
     lt = out_fm[0] + out_fm[1] + out_fm[2] + out_fm[3] + out_fm[4] + out_fm[5];
+
+    /* Genesis-Plus-GX: discrete YM2612 DAC 'ladder effect' */
+    if (chip_type == YM2612_DISCRETE)
+    {
+      int ch;
+      for (ch = 0; ch < 6; ch++)
+      {
+        if (out_fm[ch] < 0)
+        {
+          /* -4 offset (-3 when not muted) on negative channel output (9-bit) */
+          lt -= (4 << 5);
+        }
+        else
+        {
+          /* +4 offset (when muted or not) on positive channel output (9-bit) */
+          lt += (4 << 5);
+        }
+      }
+    }
 
     /* Scale down from 6-channel mix (max ±49152) to 16-bit range (±32767) */
     /* Divide by 2 to prevent overflow: max ±24576, well within int16 range */
@@ -2322,21 +2314,58 @@ unsigned int YM2612Read(int target)
 }
 
 
-void YM2612Config(unsigned char dac_bits) //,unsigned int AUDIO_FREQ_DIVISOR)
+/* Genesis-Plus-GX: YM2612Config with chip type selection
+ * type: YM2612_DISCRETE (0) - 9-bit DAC with ladder effect
+ *       YM2612_INTEGRATED (1) - 9-bit DAC without ladder effect
+ *       YM2612_ENHANCED (2) - 14-bit DAC (full precision)
+ */
+void YM2612Config(unsigned char type)
 {
-   int i;
+  /* YM2612 chip type */
+  chip_type = type;
 
-  /* DAC precision (normally 9-bit on real hardware, implemented through simple 14-bit channel output bitmasking) */
-  bitmask = ~((1 << (TL_BITS - dac_bits)) - 1);
-
-  /* update L/R panning bitmasks */
-  for (i=0; i<2*6; i++)
+  /* carrier operator outputs bitmask - from Genesis-Plus-GX */
+  if (chip_type < YM2612_ENHANCED)
   {
-    if (ym2612.OPN.pan[i])
-    {
-      ym2612.OPN.pan[i] = bitmask;
-    }
+    /* 9-bit DAC */
+    op_mask[0][3] = 0xffffffe0;
+    op_mask[1][3] = 0xffffffe0;
+    op_mask[2][3] = 0xffffffe0;
+    op_mask[3][3] = 0xffffffe0;
+    op_mask[4][1] = 0xffffffe0;
+    op_mask[4][3] = 0xffffffe0;
+    op_mask[5][1] = 0xffffffe0;
+    op_mask[5][2] = 0xffffffe0;
+    op_mask[5][3] = 0xffffffe0;
+    op_mask[6][1] = 0xffffffe0;
+    op_mask[6][2] = 0xffffffe0;
+    op_mask[6][3] = 0xffffffe0;
+    op_mask[7][0] = 0xffffffe0;
+    op_mask[7][1] = 0xffffffe0;
+    op_mask[7][2] = 0xffffffe0;
+    op_mask[7][3] = 0xffffffe0;
   }
+  else
+  {
+    /* 14-bit DAC (enhanced mode) */
+    op_mask[0][3] = 0xffffffff;
+    op_mask[1][3] = 0xffffffff;
+    op_mask[2][3] = 0xffffffff;
+    op_mask[3][3] = 0xffffffff;
+    op_mask[4][1] = 0xffffffff;
+    op_mask[4][3] = 0xffffffff;
+    op_mask[5][1] = 0xffffffff;
+    op_mask[5][2] = 0xffffffff;
+    op_mask[5][3] = 0xffffffff;
+    op_mask[6][1] = 0xffffffff;
+    op_mask[6][2] = 0xffffffff;
+    op_mask[6][3] = 0xffffffff;
+    op_mask[7][0] = 0xffffffff;
+    op_mask[7][1] = 0xffffffff;
+    op_mask[7][2] = 0xffffffff;
+    op_mask[7][3] = 0xffffffff;
+  }
+
   ym2612.divisor = AUDIO_FREQ_DIVISOR;
 }
 

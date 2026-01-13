@@ -1,15 +1,12 @@
 /*
     SN76489 emulation
-    by Maxim in 2001 and 2002
-    converted from my original Delphi implementation
+    Based on Maxim's original implementation (2001-2002)
+    with improvements from Genesis Plus GX by Eke-Eke
 
-    I'm a C newbie so I'm sure there are loads of stupid things
-    in here which I'll come back to some day and redo
-
-    Includes:
-    - Super-high quality tone channel "oversampling" by calculating fractional positions on transitions
-    - Noise output pattern reverse engineered from actual SMS output
-    - Volume levels taken from actual SMS output
+    Genesis Plus GX improvements:
+    - Proper discrete vs integrated chip type support
+    - Accurate -2dB volume table from hardware measurements
+    - Correct noise shift register width and feedback
 
     07/08/04  Charles MacDonald
     Modified for use with SMS Plus:
@@ -34,48 +31,55 @@
 #include "gwenesis_sn76489.h"
 #include "gwenesis_savestate.h"
 
-#define NoiseInitialState   0x8000  /* Initial state of shift register */
 #define PSG_CUTOFF          0x6     /* Value below which PSG does not output */
 
-// #define PSG_MAX_VOLUME 2800
-// static const uint16 chanVolume[16] = {
-//   PSG_MAX_VOLUME,               /*  MAX  */
-//   PSG_MAX_VOLUME * 0.794328234, /* -2dB  */
-//   PSG_MAX_VOLUME * 0.630957344, /* -4dB  */
-//   PSG_MAX_VOLUME * 0.501187233, /* -6dB  */
-//   PSG_MAX_VOLUME * 0.398107170, /* -8dB  */
-//   PSG_MAX_VOLUME * 0.316227766, /* -10dB */
-//   PSG_MAX_VOLUME * 0.251188643, /* -12dB */
-//   PSG_MAX_VOLUME * 0.199526231, /* -14dB */
-//   PSG_MAX_VOLUME * 0.158489319, /* -16dB */
-//   PSG_MAX_VOLUME * 0.125892541, /* -18dB */
-//   PSG_MAX_VOLUME * 0.1,         /* -20dB */
-//   PSG_MAX_VOLUME * 0.079432823, /* -22dB */
-//   PSG_MAX_VOLUME * 0.063095734, /* -24dB */
-//   PSG_MAX_VOLUME * 0.050118723, /* -26dB */
-//   PSG_MAX_VOLUME * 0.039810717, /* -28dB */
-//   0                             /*  OFF  */
-// };
+/* Noise feedback lookup table (from Genesis Plus GX)
+   Used for XOR feedback calculation on white noise */
+static const uint8 noiseFeedback[10] = {0,1,1,0,1,0,0,1,1,0};
 
-#define PSG_MAX_VOLUME_MAX 3100
-#define PSG_MAX_VOLUME_2dB (int)(PSG_MAX_VOLUME_MAX*0.794328234)
-#define PSG_MAX_VOLUME_4dB (int)(PSG_MAX_VOLUME_MAX*0.630957344)
-
+/* Accurate volume table with -2dB steps (from Genesis Plus GX)
+   Measured from actual hardware */
+#define PSG_MAX_VOLUME 2800
 static const int PSGVolumeValues[16] = {
-	PSG_MAX_VOLUME_MAX   ,PSG_MAX_VOLUME_2dB   ,PSG_MAX_VOLUME_4dB,
-    PSG_MAX_VOLUME_MAX/2 ,PSG_MAX_VOLUME_2dB/2 ,PSG_MAX_VOLUME_4dB/2,
-    PSG_MAX_VOLUME_MAX/4 ,PSG_MAX_VOLUME_2dB/4 ,PSG_MAX_VOLUME_4dB/4,
-    PSG_MAX_VOLUME_MAX/8 ,PSG_MAX_VOLUME_2dB/8 ,PSG_MAX_VOLUME_4dB/8,
-    PSG_MAX_VOLUME_MAX/16,PSG_MAX_VOLUME_2dB/16,PSG_MAX_VOLUME_4dB/16,
-    0};
+    PSG_MAX_VOLUME,                               /*  MAX  */
+    (int)(PSG_MAX_VOLUME * 0.794328234),          /* -2dB  */
+    (int)(PSG_MAX_VOLUME * 0.630957344),          /* -4dB  */
+    (int)(PSG_MAX_VOLUME * 0.501187233),          /* -6dB  */
+    (int)(PSG_MAX_VOLUME * 0.398107170),          /* -8dB  */
+    (int)(PSG_MAX_VOLUME * 0.316227766),          /* -10dB */
+    (int)(PSG_MAX_VOLUME * 0.251188643),          /* -12dB */
+    (int)(PSG_MAX_VOLUME * 0.199526231),          /* -14dB */
+    (int)(PSG_MAX_VOLUME * 0.158489319),          /* -16dB */
+    (int)(PSG_MAX_VOLUME * 0.125892541),          /* -18dB */
+    (int)(PSG_MAX_VOLUME * 0.1),                  /* -20dB */
+    (int)(PSG_MAX_VOLUME * 0.079432823),          /* -22dB */
+    (int)(PSG_MAX_VOLUME * 0.063095734),          /* -24dB */
+    (int)(PSG_MAX_VOLUME * 0.050118723),          /* -26dB */
+    (int)(PSG_MAX_VOLUME * 0.039810717),          /* -28dB */
+    0                                             /*  OFF  */
+};
 
 static SN76489_Context gwenesis_SN76489;
 
-void gwenesis_SN76489_Init( int PSGClockValue, int SamplingRate,int freq_divisor)
+void gwenesis_SN76489_Init(int PSGClockValue, int SamplingRate, int freq_divisor, int type)
 {
     gwenesis_SN76489.dClock=(float)PSGClockValue/16/SamplingRate;
     gwenesis_SN76489.divisor = freq_divisor;
-    gwenesis_SN76489.WhiteNoiseFeedback = 0x0009; /* Bits 0 and 3 for SN76489 white noise */
+    
+    /* Setup chip type parameters (from Genesis Plus GX) */
+    if (type == PSG_DISCRETE) {
+        /* Original SN76489A discrete chip */
+        gwenesis_SN76489.noiseShiftWidth = 14;
+        gwenesis_SN76489.noiseBitMask = 0x6;    /* Bits 1 and 2 */
+        gwenesis_SN76489.zeroFreqValue = 0x400; /* Behaves as 0x400 on discrete */
+        gwenesis_SN76489.WhiteNoiseFeedback = 0x0006;
+    } else {
+        /* Integrated ASIC clone (later revisions) */
+        gwenesis_SN76489.noiseShiftWidth = 15;
+        gwenesis_SN76489.noiseBitMask = 0x9;    /* Bits 0 and 3 */
+        gwenesis_SN76489.zeroFreqValue = 0x1;   /* Behaves as 0x1 on integrated */
+        gwenesis_SN76489.WhiteNoiseFeedback = 0x0009;
+    }
 
     gwenesis_SN76489_Reset();
 }
@@ -93,8 +97,8 @@ void gwenesis_SN76489_Reset()
         /* Set counters to 0 */
         gwenesis_SN76489.ToneFreqVals[i] = 0;
 
-        /* Set flip-flops to 1 */
-        gwenesis_SN76489.ToneFreqPos[i] = 1;
+        /* Set flip-flops to -1 (low) as per Genesis Plus GX */
+        gwenesis_SN76489.ToneFreqPos[i] = -1;
 
         /* Set intermediate positions to do-not-use value */
         gwenesis_SN76489.IntermediatePos[i] = LONG_MIN;
@@ -105,13 +109,14 @@ void gwenesis_SN76489_Reset()
     gwenesis_SN76489.Registers[7] = 0xf;         /* Noise vol=off */
     gwenesis_SN76489.NoiseFreq = 0x10;
     gwenesis_SN76489.ToneFreqVals[3] = 0;
-    gwenesis_SN76489.ToneFreqPos[3] = 1;
+    gwenesis_SN76489.ToneFreqPos[3] = -1;
     gwenesis_SN76489.IntermediatePos[3] = LONG_MIN;
 
-    gwenesis_SN76489.LatchedRegister=0;
+    /* Tone #2 attenuation register is latched on power-on (verified in Genesis Plus GX) */
+    gwenesis_SN76489.LatchedRegister = 3;
 
-    /* Initialise noise generator */
-    gwenesis_SN76489.NoiseShiftRegister=NoiseInitialState;
+    /* Initialise noise generator with proper shift width (from Genesis Plus GX) */
+    gwenesis_SN76489.NoiseShiftRegister = 1 << gwenesis_SN76489.noiseShiftWidth;
 
     /* Zero clock */
     gwenesis_SN76489.Clock=0;
@@ -189,24 +194,27 @@ static inline void gwenesis_SN76489_Update(INT16 *buffer, int length)
             } else gwenesis_SN76489.IntermediatePos[i]=LONG_MIN;
         }
 
-        /* Noise channel */
+        /* Noise channel (with Genesis Plus GX improvements) */
         if (gwenesis_SN76489.ToneFreqVals[3]<=0) {   /* If it gets below 0... */
             gwenesis_SN76489.ToneFreqPos[3]=-gwenesis_SN76489.ToneFreqPos[3]; /* Flip the flip-flop */
             if (gwenesis_SN76489.NoiseFreq!=0x80)            /* If not matching tone2, decrement counter */
                 gwenesis_SN76489.ToneFreqVals[3]+=gwenesis_SN76489.NoiseFreq*(gwenesis_SN76489.NumClocksForSample/gwenesis_SN76489.NoiseFreq+1);
-            if (gwenesis_SN76489.ToneFreqPos[3]==1) {    /* Only once per cycle... */
-                int Feedback;
+            
+            /* Noise register is shifted on positive edge only (from Genesis Plus GX) */
+            if (gwenesis_SN76489.ToneFreqPos[3]==1) {
+                int shiftOutput = gwenesis_SN76489.NoiseShiftRegister & 0x01;
+                
                 if (gwenesis_SN76489.Registers[6]&0x4) { /* White noise */
-                    /* Calculate parity of fed-back bits for feedback */
-
-                        /* If two bits fed back, I can do Feedback=(nsr & fb) && (nsr & fb ^ fb) */
-                        /* since that's (one or more bits set) && (not all bits set) */
-                        Feedback=((gwenesis_SN76489.NoiseShiftRegister&gwenesis_SN76489.WhiteNoiseFeedback) && ((gwenesis_SN76489.NoiseShiftRegister&gwenesis_SN76489.WhiteNoiseFeedback)^gwenesis_SN76489.WhiteNoiseFeedback));
-
-                } else      /* Periodic noise */
-                    Feedback=gwenesis_SN76489.NoiseShiftRegister&1;
-
-                gwenesis_SN76489.NoiseShiftRegister=(gwenesis_SN76489.NoiseShiftRegister>>1) | (Feedback<<15);
+                    /* Use XOR feedback lookup table (from Genesis Plus GX) */
+                    int feedbackBits = gwenesis_SN76489.NoiseShiftRegister & gwenesis_SN76489.noiseBitMask;
+                    int feedback = noiseFeedback[feedbackBits];
+                    gwenesis_SN76489.NoiseShiftRegister = (gwenesis_SN76489.NoiseShiftRegister >> 1) | 
+                        (feedback << gwenesis_SN76489.noiseShiftWidth);
+                } else {  /* Periodic noise */
+                    /* Shift and feedback current output */
+                    gwenesis_SN76489.NoiseShiftRegister = (gwenesis_SN76489.NoiseShiftRegister >> 1) | 
+                        (shiftOutput << gwenesis_SN76489.noiseShiftWidth);
+                }
             }
         }
     }
@@ -260,10 +268,13 @@ void gwenesis_SN76489_Write(int data, int target)
 	case 0:
 	case 2:
     case 4: /* Tone channels */
-        if (gwenesis_SN76489.Registers[gwenesis_SN76489.LatchedRegister]==0) gwenesis_SN76489.Registers[gwenesis_SN76489.LatchedRegister]=1;    /* Zero frequency changed to 1 to avoid div/0 */
+        /* Zero frequency handling based on chip type (from Genesis Plus GX) */
+        if (gwenesis_SN76489.Registers[gwenesis_SN76489.LatchedRegister]==0) 
+            gwenesis_SN76489.Registers[gwenesis_SN76489.LatchedRegister]=gwenesis_SN76489.zeroFreqValue;
 		break;
     case 6: /* Noise */
-        gwenesis_SN76489.NoiseShiftRegister=NoiseInitialState;   /* reset shift register */
+        /* Reset shift register with proper width (from Genesis Plus GX) */
+        gwenesis_SN76489.NoiseShiftRegister = 1 << gwenesis_SN76489.noiseShiftWidth;
         gwenesis_SN76489.NoiseFreq=0x10<<(gwenesis_SN76489.Registers[6]&0x3);     /* set noise signal generator frequency */
 		break;
     }
