@@ -1123,68 +1123,12 @@ int main(void) {
     psram_reset();
     LOG("PSRAM initialized\n");
     
-    // Mount SD card
-    LOG("Mounting SD card...\n");
-    FRESULT res = f_mount(&fs, "", 1);
-    if (res != FR_OK) {
-        LOG("Failed to mount SD card: %d\n", res);
-        while (1) {
-            tight_loop_contents();
-        }
-    }
-    LOG("SD card mounted\n");
+    // Defer SD card mounting to after graphics init
+    // so we can show an error message on screen
+    LOG("SD card will be mounted after graphics init\\n");
     
-    // Load settings from SD card
-    LOG("Loading settings...\n");
-    settings_load();
-    LOG("Settings loaded: CPU=%d MHz, PSRAM=%d MHz, FM=%s, DAC=%s, CRT=%s/%d%%\n",
-        g_settings.cpu_freq, g_settings.psram_freq,
-        g_settings.fm_sound ? "on" : "off",
-        g_settings.dac_sound ? "on" : "off",
-        g_settings.crt_effect ? "on" : "off",
-        g_settings.crt_dim);
-    
-    // Apply runtime settings
-    // CRT effect can be changed at runtime
-    graphics_set_crt_effect(g_settings.crt_effect, g_settings.crt_dim);
-    
-    // Apply Z80 setting
-    z80_enabled = g_settings.z80_enabled;
-    LOG("Z80: %s\n", z80_enabled ? "enabled" : "disabled");
-    
-    // Apply audio settings
-    audio_enabled = g_settings.audio_enabled;
-    
-    if (!g_settings.audio_enabled) {
-        // Audio disabled - mute everything for max performance
-        ym2612_enabled = false;
-        sn76489_enabled = false;
-        LOG("Audio: DISABLED (max performance mode)\n");
-    } else {
-        // Audio enabled - apply individual channel settings
-        ym2612_enabled = true;
-        ym2612_fm_enabled = g_settings.fm_sound;
-        ym2612_dac_enabled = CHANNEL_ENABLED(g_settings.channel_mask, 5);  // Channel 6
-        sn76489_enabled = CHANNEL_ENABLED(g_settings.channel_mask, 6);     // PSG
-        
-        // Apply per-channel mute settings
-        for (int i = 0; i < 6; i++) {
-            ym2612_channel_enabled[i] = CHANNEL_ENABLED(g_settings.channel_mask, i);
-        }
-        LOG("Audio: FM=%s, Channels=0x%02X, PSG=%s\n", 
-            g_settings.fm_sound ? "on" : "off",
-            g_settings.channel_mask & 0x3F,
-            CHANNEL_ENABLED(g_settings.channel_mask, 6) ? "on" : "off");
-    }
-    
-    // Check if CPU/PSRAM frequencies need to change
-    // If they differ from compile-time values, we need to reconfigure
-    uint32_t current_cpu_mhz = clock_get_hz(clk_sys) / 1000000;
-    if (g_settings.cpu_freq != current_cpu_mhz || g_settings.psram_freq != PSRAM_MAX_FREQ_MHZ) {
-        LOG("Settings require clock reconfiguration (CPU: %lu->%d, PSRAM: %d->%d)\n",
-            current_cpu_mhz, g_settings.cpu_freq, PSRAM_MAX_FREQ_MHZ, g_settings.psram_freq);
-        reconfigure_clocks(g_settings.cpu_freq, g_settings.psram_freq);
-    }
+    // Use default settings until we can read from SD card
+    // (settings_load() will use defaults if file doesn't exist)
     
     // Clear the screen buffer BEFORE HDMI init - DMA starts scanning immediately
     // Use index 1 instead of 0 - index 0 causes HDMI issues at 378MHz
@@ -1255,6 +1199,59 @@ int main(void) {
     // Ensure we don't briefly display uninitialized pixels with the new palette
     // Use index 1 instead of 0 - index 0 causes HDMI issues at 378MHz
     memset(SCREEN, 1, sizeof(SCREEN));
+    
+    // Now mount SD card (after graphics init so we can show errors)
+    LOG("Mounting SD card...\n");
+    FRESULT res = f_mount(&fs, "", 1);
+    if (res != FR_OK) {
+        LOG("Failed to mount SD card: %d\n", res);
+        rom_selector_show_sd_error((uint8_t *)SCREEN, res);
+        // Never returns
+    }
+    LOG("SD card mounted\n");
+    
+    // Load settings from SD card
+    LOG("Loading settings...\n");
+    settings_load();
+    LOG("Settings loaded: CPU=%d MHz, PSRAM=%d MHz, FM=%s, DAC=%s, CRT=%s/%d%%\n",
+        g_settings.cpu_freq, g_settings.psram_freq,
+        g_settings.fm_sound ? "on" : "off",
+        g_settings.dac_sound ? "on" : "off",
+        g_settings.crt_effect ? "on" : "off",
+        g_settings.crt_dim);
+    
+    // Apply runtime settings
+    graphics_set_crt_effect(g_settings.crt_effect, g_settings.crt_dim);
+    
+    z80_enabled = g_settings.z80_enabled;
+    LOG("Z80: %s\n", z80_enabled ? "enabled" : "disabled");
+    
+    audio_enabled = g_settings.audio_enabled;
+    if (!g_settings.audio_enabled) {
+        ym2612_enabled = false;
+        sn76489_enabled = false;
+        LOG("Audio: DISABLED (max performance mode)\n");
+    } else {
+        ym2612_enabled = true;
+        ym2612_fm_enabled = g_settings.fm_sound;
+        ym2612_dac_enabled = CHANNEL_ENABLED(g_settings.channel_mask, 5);
+        sn76489_enabled = CHANNEL_ENABLED(g_settings.channel_mask, 6);
+        for (int i = 0; i < 6; i++) {
+            ym2612_channel_enabled[i] = CHANNEL_ENABLED(g_settings.channel_mask, i);
+        }
+        LOG("Audio: FM=%s, Channels=0x%02X, PSG=%s\n", 
+            g_settings.fm_sound ? "on" : "off",
+            g_settings.channel_mask & 0x3F,
+            CHANNEL_ENABLED(g_settings.channel_mask, 6) ? "on" : "off");
+    }
+    
+    // Check if CPU/PSRAM frequencies need to change
+    uint32_t current_cpu_mhz = clock_get_hz(clk_sys) / 1000000;
+    if (g_settings.cpu_freq != current_cpu_mhz || g_settings.psram_freq != PSRAM_MAX_FREQ_MHZ) {
+        LOG("Settings require clock reconfiguration (CPU: %lu->%d, PSRAM: %d->%d)\n",
+            current_cpu_mhz, g_settings.cpu_freq, PSRAM_MAX_FREQ_MHZ, g_settings.psram_freq);
+        reconfigure_clocks(g_settings.cpu_freq, g_settings.psram_freq);
+    }
     
     // Show ROM selector
     LOG("Showing ROM selector...\n");

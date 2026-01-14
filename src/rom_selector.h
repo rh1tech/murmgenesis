@@ -21,4 +21,11 @@
  */
 bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *screen_buffer);
 
+/**
+ * Display SD card error screen (blocks forever)
+ * @param screen_buffer Pointer to the screen buffer (320x240 8-bit indexed)
+ * @param error_code The FRESULT error code from f_mount
+ */
+void rom_selector_show_sd_error(uint8_t *screen_buffer, int error_code);
+
 #endif // ROM_SELECTOR_H

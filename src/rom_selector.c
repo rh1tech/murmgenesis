@@ -807,6 +807,65 @@ static void render_rom_menu(uint8_t *screen, int selected, int scroll_offset, bo
     draw_footer(screen);
 }
 
+// Display SD card error screen (blocks forever)
+void rom_selector_show_sd_error(uint8_t *screen_buffer, int error_code) {
+    // Clear screen to near-black
+    memset(screen_buffer, 1, SCREEN_WIDTH * SCREEN_HEIGHT);
+    
+    // Draw header
+    draw_demostyle_header(screen_buffer, 0);
+    
+    // Error message
+    const char *title = "SD CARD ERROR";
+    int title_width = (int)strlen(title) * FONT_WIDTH;
+    int title_x = (SCREEN_WIDTH - title_width) / 2;
+    draw_text(screen_buffer, title_x, MENU_Y, title, COLOR_RED);
+    
+    // Error details
+    const char *msg1 = "NO SD CARD DETECTED";
+    const char *msg2 = "OR CARD NOT FORMATTED";
+    
+    int msg1_width = (int)strlen(msg1) * FONT_WIDTH;
+    int msg1_x = (SCREEN_WIDTH - msg1_width) / 2;
+    draw_text(screen_buffer, msg1_x, MENU_Y + 20, msg1, COLOR_WHITE);
+    
+    int msg2_width = (int)strlen(msg2) * FONT_WIDTH;
+    int msg2_x = (SCREEN_WIDTH - msg2_width) / 2;
+    draw_text(screen_buffer, msg2_x, MENU_Y + 32, msg2, COLOR_WHITE);
+    
+    // Error code
+    char code_str[32];
+    snprintf(code_str, sizeof(code_str), "ERROR CODE: %d", error_code);
+    int code_width = (int)strlen(code_str) * FONT_WIDTH;
+    int code_x = (SCREEN_WIDTH - code_width) / 2;
+    draw_text(screen_buffer, code_x, MENU_Y + 52, code_str, COLOR_GRAY);
+    
+    // Instructions
+    const char *inst1 = "PLEASE INSERT A FAT32";
+    const char *inst2 = "FORMATTED SD CARD";
+    const char *inst3 = "AND RESET THE DEVICE";
+    
+    int inst1_width = (int)strlen(inst1) * FONT_WIDTH;
+    int inst1_x = (SCREEN_WIDTH - inst1_width) / 2;
+    draw_text(screen_buffer, inst1_x, MENU_Y + 80, inst1, COLOR_YELLOW);
+    
+    int inst2_width = (int)strlen(inst2) * FONT_WIDTH;
+    int inst2_x = (SCREEN_WIDTH - inst2_width) / 2;
+    draw_text(screen_buffer, inst2_x, MENU_Y + 92, inst2, COLOR_YELLOW);
+    
+    int inst3_width = (int)strlen(inst3) * FONT_WIDTH;
+    int inst3_x = (SCREEN_WIDTH - inst3_width) / 2;
+    draw_text(screen_buffer, inst3_x, MENU_Y + 104, inst3, COLOR_YELLOW);
+    
+    // Draw footer
+    draw_footer(screen_buffer);
+    
+    // Block forever - no input handling
+    while (1) {
+        tight_loop_contents();
+    }
+}
+
 bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *screen_buffer) {
 #if ENABLE_LOGGING
     printf("ROM Selector: Starting...\n");
