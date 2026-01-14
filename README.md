@@ -289,7 +289,7 @@ Additional code or concepts are incorporated from:
 | [Z80 Emulator](https://fms.komkon.org/EMUL8/) | Marat Fayzullin | Non-commercial | Z80 CPU core |
 | [Genesis-Plus-GX](https://github.com/ekeeke/Genesis-Plus-GX) | Charles MacDonald, Eke-Eke | Non-commercial | Reference, optional CPU cores |
 | [ClownMDEmu](https://github.com/Clownacy/clownmdemu) | Clownacy | AGPL v3 | Reference |
-| [ARMZ80](https://github.com/FluBBaOfWard/ARMZ80) | Fredrik Ahlström (FluBBa) | Custom | Z80 ARM assembly |
+| [ARMZ80](https://github.com/FluBBaOfWard/ARMZ80) | Fredrik Ahlström (FluBBa) | Custom | Reference for ARM assembly |
 | [jgenesis](https://github.com/jsgroth/jgenesis) | James Groth | MIT | Reference |
 | [yaze-ag](https://www.mathematik.uni-ulm.de/users/ag/yaze-ag/) | Frank D. Cringle, Andreas Gerlich | GPL v2 | Z80 reference |
 | [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk) | Raspberry Pi Foundation | BSD 3-Clause | Hardware abstraction |
