@@ -3,7 +3,6 @@
 # release.sh - Build all release variants of murmgenesis
 #
 # Creates UF2 files for each board variant (M1, M2) at each clock speed:
-#   - Non-overclocked: 252 MHz CPU, 100 MHz PSRAM
 #   - Medium overclock: 378 MHz CPU, 133 MHz PSRAM
 #   - Max overclock: 504 MHz CPU, 166 MHz PSRAM
 #
@@ -95,10 +94,8 @@ mkdir -p "$RELEASE_DIR"
 
 # Build configurations: "BOARD CPU_SPEED PSRAM_SPEED DESCRIPTION"
 CONFIGS=(
-    "M1 252 100 non-overclocked"
     "M1 378 133 medium-overclock"
     "M1 504 166 max-overclock"
-    "M2 252 100 non-overclocked"
     "M2 378 133 medium-overclock"
     "M2 504 166 max-overclock"
 )
