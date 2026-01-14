@@ -239,6 +239,10 @@ elseif(BOARD_VARIANT STREQUAL "M2")
         SDCARD_PIN_SPI0_SCK=6
         SDCARD_PIN_SPI0_MOSI=7
         SDCARD_PIN_SPI0_MISO=4
+        # NES/SNES Gamepad
+        NESPAD_GPIO_CLK=20
+        NESPAD_GPIO_LATCH=21
+        NESPAD_GPIO_DATA=26
     )
 endif()
 
