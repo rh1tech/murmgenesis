@@ -445,6 +445,57 @@ int usbhid_get_key_action(uint8_t *keycode, int *down) {
     return 1;
 }
 
+// Convert HID keycode to keyboard state bit (same mappings as PS/2)
+static uint16_t hid_to_kbd_state_bit(uint8_t keycode) {
+    switch (keycode) {
+        // Arrow keys -> D-pad
+        case 0x52: return 0x0001; // Up arrow -> KBD_STATE_UP
+        case 0x51: return 0x0002; // Down arrow -> KBD_STATE_DOWN
+        case 0x50: return 0x0004; // Left arrow -> KBD_STATE_LEFT
+        case 0x4F: return 0x0008; // Right arrow -> KBD_STATE_RIGHT
+        
+        // A, S, D -> Genesis A, B, C
+        case 0x04: return 0x0010; // A key -> KBD_STATE_A
+        case 0x16: return 0x0020; // S key -> KBD_STATE_B
+        case 0x07: return 0x0040; // D key -> KBD_STATE_C
+        
+        // Q, W, E -> Genesis X, Y, Z
+        case 0x14: return 0x0100; // Q key -> KBD_STATE_X
+        case 0x1A: return 0x0200; // W key -> KBD_STATE_Y
+        case 0x08: return 0x0400; // E key -> KBD_STATE_Z
+        
+        // Enter, Keypad Enter -> Start
+        case 0x28: return 0x0080; // Enter -> KBD_STATE_START
+        case 0x58: return 0x0080; // Keypad Enter -> KBD_STATE_START
+        
+        // Space -> Select
+        case 0x2C: return 0x1000; // Space -> KBD_STATE_SELECT
+        
+        // ESC -> Settings menu
+        case 0x29: return 0x2000; // Escape -> KBD_STATE_ESC
+        
+        default: return 0;
+    }
+}
+
+uint16_t usbhid_get_kbd_state(void) {
+    uint16_t state = 0;
+    
+    // Check each key in the current keyboard report
+    for (int i = 0; i < 6; i++) {
+        if (prev_kbd_report.keycode[i] != 0) {
+            state |= hid_to_kbd_state_bit(prev_kbd_report.keycode[i]);
+        }
+    }
+    
+    // Check modifier keys for Mode (Alt)
+    if (prev_kbd_report.modifier & (KEYBOARD_MODIFIER_LEFTALT | KEYBOARD_MODIFIER_RIGHTALT)) {
+        state |= 0x0800; // KBD_STATE_MODE
+    }
+    
+    return state;
+}
+
 // Gamepad API functions
 int usbhid_gamepad_connected(void) {
     return gamepad_connected;

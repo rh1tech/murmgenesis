@@ -906,6 +906,11 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
         ps2kbd_tick();
         uint16_t kbd_state = ps2kbd_get_state();
         
+#ifdef USB_HID_ENABLED
+        // Merge USB keyboard state with PS/2 keyboard state
+        kbd_state |= usbhid_get_kbd_state();
+#endif
+        
         // Merge keyboard state into buttons
         if (kbd_state & KBD_STATE_UP)    buttons |= DPAD_UP;
         if (kbd_state & KBD_STATE_DOWN)  buttons |= DPAD_DOWN;
@@ -913,7 +918,7 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
         if (kbd_state & KBD_STATE_RIGHT) buttons |= DPAD_RIGHT;
         if (kbd_state & KBD_STATE_A)     buttons |= DPAD_A;      // A key = confirm
         if (kbd_state & KBD_STATE_B)     buttons |= DPAD_B;      // S key = back
-        if (kbd_state & KBD_STATE_START) buttons |= DPAD_START;  // X/Space/Enter = confirm
+        if (kbd_state & KBD_STATE_START) buttons |= DPAD_START;  // Enter = confirm
         if (kbd_state & KBD_STATE_ESC)   buttons |= (DPAD_SELECT | DPAD_START);  // ESC = open settings
         
 #ifdef USB_HID_ENABLED

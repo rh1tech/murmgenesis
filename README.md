@@ -146,6 +146,12 @@ PS/2 keyboards are supported for direct gameplay without a gamepad.
 | Alt          | Mode           | 6-button mode toggle |
 | ESC          | Settings       | Opens settings menu |
 
+### USB Keyboard
+
+When built with USB HID support (`-DUSB_HID_ENABLED=1`), USB keyboards are also supported with the same key mappings as PS/2 keyboards (see table above).
+| Alt          | Mode           | 6-button mode toggle |
+| ESC          | Settings       | Opens settings menu |
+
 ## Building
 
 ### Prerequisites

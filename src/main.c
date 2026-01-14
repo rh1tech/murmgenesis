@@ -1494,6 +1494,11 @@ void gwenesis_io_get_buttons(void) {
     ps2kbd_tick();
     uint16_t kbd_state = ps2kbd_get_state();
     
+#ifdef USB_HID_ENABLED
+    // Merge USB keyboard state with PS/2 keyboard state
+    kbd_state |= usbhid_get_kbd_state();
+#endif
+    
     // Apply keyboard state to button_state[0] (Player 1)
     // Note: keyboard ORs with gamepad (either can trigger button)
     if (kbd_state & KBD_STATE_UP)    button_state[0] &= ~(1 << 0);  // Up

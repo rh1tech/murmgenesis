@@ -92,6 +92,13 @@ void usbhid_get_mouse_state(usbhid_mouse_state_t *state);
 int usbhid_get_key_action(uint8_t *keycode, int *down);
 
 /**
+ * Get keyboard state as bitmask (same format as PS/2 keyboard)
+ * Uses same KBD_STATE_* constants from ps2kbd_wrapper.h
+ * @return Bitmask of currently pressed keys
+ */
+uint16_t usbhid_get_kbd_state(void);
+
+/**
  * Check if a USB gamepad is connected
  * @return Non-zero if gamepad connected
  */

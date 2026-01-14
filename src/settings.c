@@ -548,6 +548,11 @@ static bool show_channel_submenu(uint8_t *screen_buffer) {
         ps2kbd_tick();
         uint16_t kbd_state = ps2kbd_get_state();
         
+#ifdef USB_HID_ENABLED
+        // Merge USB keyboard state with PS/2 keyboard state
+        kbd_state |= usbhid_get_kbd_state();
+#endif
+        
         // Merge keyboard state into buttons
         if (kbd_state & KBD_STATE_UP)    buttons |= DPAD_UP;
         if (kbd_state & KBD_STATE_DOWN)  buttons |= DPAD_DOWN;
@@ -987,6 +992,11 @@ settings_result_t settings_menu_show_with_restore(uint8_t *screen_buffer, uint8_
         ps2kbd_tick();
         uint16_t kbd_state = ps2kbd_get_state();
         
+#ifdef USB_HID_ENABLED
+        // Merge USB keyboard state with PS/2 keyboard state
+        kbd_state |= usbhid_get_kbd_state();
+#endif
+        
         // Merge keyboard state into buttons
         if (kbd_state & KBD_STATE_UP)    buttons |= DPAD_UP;
         if (kbd_state & KBD_STATE_DOWN)  buttons |= DPAD_DOWN;
@@ -1163,6 +1173,12 @@ bool settings_check_hotkey(void) {
     // Check PS/2 keyboard for ESC
     ps2kbd_tick();
     uint16_t kbd_state = ps2kbd_get_state();
+    
+#ifdef USB_HID_ENABLED
+    // Merge USB keyboard state
+    kbd_state |= usbhid_get_kbd_state();
+#endif
+    
     if (kbd_state & KBD_STATE_ESC) {
         start_select = true;
     }
