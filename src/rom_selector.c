@@ -825,11 +825,13 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
     memset(screen_buffer, 1, SCREEN_WIDTH * SCREEN_HEIGHT);
     scan_roms();
     
+#if 0  // Warning splash disabled for now
     // Show warning splash
     draw_warning_splash(screen_buffer);
     for (int i = 0; i < 3000; ++i) {
         sleep_ms(1);
     }
+#endif
     
     // Go directly to ROM selector - no clearing in between
 #if ENABLE_LOGGING
