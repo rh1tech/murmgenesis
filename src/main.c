@@ -42,6 +42,9 @@
 // Gamepad driver
 #include "nespad/nespad.h"
 
+// PS/2 Keyboard support
+#include "ps2kbd/ps2kbd_wrapper.h"
+
 // USB HID (gamepad support) - build with USB_HID_ENABLED=1 ./build.sh
 #ifdef USB_HID_ENABLED
 #include "usbhid/usbhid.h"
@@ -329,7 +332,8 @@ extern int screen_height;
 // Audio buffers - DOUBLE BUFFERED to prevent race conditions
 // Core 0 writes to one buffer, Core 1 reads from the other
 // Use __not_in_flash to ensure they stay in RAM
-#define AUDIO_BUFFER_SIZE 4096
+// Buffer size: ~888 samples/frame typical, 2048 gives good headroom
+#define AUDIO_BUFFER_SIZE 2048
 static int16_t __not_in_flash("audio") gwenesis_sn76489_buffer_mem[2][AUDIO_BUFFER_SIZE];
 static int16_t __not_in_flash("audio") gwenesis_ym2612_buffer_mem[2][AUDIO_BUFFER_SIZE];
 
@@ -1232,6 +1236,11 @@ int main(void) {
 #else
     LOG("Gamepad not configured for this board\n");
 #endif
+
+    // Initialize PS/2 keyboard
+    LOG("Initializing PS/2 keyboard...\n");
+    ps2kbd_init();
+    LOG("PS/2 keyboard initialized (CLK=%d, DATA=%d)\n", PS2_PIN_CLK, PS2_PIN_DATA);
     
     // Set up a simple palette for ROM selector (before calling it)
     LOG("Setting up ROM selector palette...\n");
@@ -1479,4 +1488,21 @@ void gwenesis_io_get_buttons(void) {
         // SELECT+START combo is now handled in the emulation loop for settings menu
     }
 #endif
+
+    // PS/2 Keyboard input for Player 1
+    // Get current keyboard state (updated by ps2kbd_tick in gwenesis_io_get_buttons)
+    ps2kbd_tick();
+    uint16_t kbd_state = ps2kbd_get_state();
+    
+    // Apply keyboard state to button_state[0] (Player 1)
+    // Note: keyboard ORs with gamepad (either can trigger button)
+    if (kbd_state & KBD_STATE_UP)    button_state[0] &= ~(1 << 0);  // Up
+    if (kbd_state & KBD_STATE_DOWN)  button_state[0] &= ~(1 << 1);  // Down
+    if (kbd_state & KBD_STATE_LEFT)  button_state[0] &= ~(1 << 2);  // Left
+    if (kbd_state & KBD_STATE_RIGHT) button_state[0] &= ~(1 << 3);  // Right
+    if (kbd_state & KBD_STATE_A)     button_state[0] &= ~(1 << 6);  // A key -> Genesis A (bit 6)
+    if (kbd_state & KBD_STATE_B)     button_state[0] &= ~(1 << 4);  // S key -> Genesis B (bit 4)
+    if (kbd_state & KBD_STATE_C)     button_state[0] &= ~(1 << 5);  // D key -> Genesis C (bit 5)
+    if (kbd_state & KBD_STATE_START) button_state[0] &= ~(1 << 7);  // Start
+    // Note: X, Y, Z, Mode are for 6-button controllers (not yet fully implemented in gwenesis_io)
 }

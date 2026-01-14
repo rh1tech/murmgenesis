@@ -10,6 +10,7 @@
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
 #include "nespad/nespad.h"
+#include "ps2kbd/ps2kbd_wrapper.h"
 #include "audio.h"
 #include <string.h>
 #include <stdio.h>
@@ -543,6 +544,20 @@ static bool show_channel_submenu(uint8_t *screen_buffer) {
         nespad_read();
         uint32_t buttons = nespad_state;
         
+        // Poll PS/2 keyboard and get state
+        ps2kbd_tick();
+        uint16_t kbd_state = ps2kbd_get_state();
+        
+        // Merge keyboard state into buttons
+        if (kbd_state & KBD_STATE_UP)    buttons |= DPAD_UP;
+        if (kbd_state & KBD_STATE_DOWN)  buttons |= DPAD_DOWN;
+        if (kbd_state & KBD_STATE_LEFT)  buttons |= DPAD_LEFT;
+        if (kbd_state & KBD_STATE_RIGHT) buttons |= DPAD_RIGHT;
+        if (kbd_state & KBD_STATE_A)     buttons |= DPAD_A;
+        if (kbd_state & KBD_STATE_B)     buttons |= DPAD_B;
+        if (kbd_state & KBD_STATE_START) buttons |= DPAD_START;
+        if (kbd_state & KBD_STATE_ESC)   buttons |= DPAD_B;  // ESC = back
+        
 #ifdef USB_HID_ENABLED
         usbhid_task();
         if (usbhid_gamepad_connected()) {
@@ -968,6 +983,20 @@ settings_result_t settings_menu_show_with_restore(uint8_t *screen_buffer, uint8_
         nespad_read();
         uint32_t buttons = nespad_state;
         
+        // Poll PS/2 keyboard and get state
+        ps2kbd_tick();
+        uint16_t kbd_state = ps2kbd_get_state();
+        
+        // Merge keyboard state into buttons
+        if (kbd_state & KBD_STATE_UP)    buttons |= DPAD_UP;
+        if (kbd_state & KBD_STATE_DOWN)  buttons |= DPAD_DOWN;
+        if (kbd_state & KBD_STATE_LEFT)  buttons |= DPAD_LEFT;
+        if (kbd_state & KBD_STATE_RIGHT) buttons |= DPAD_RIGHT;
+        if (kbd_state & KBD_STATE_A)     buttons |= DPAD_A;
+        if (kbd_state & KBD_STATE_B)     buttons |= DPAD_B;
+        if (kbd_state & KBD_STATE_START) buttons |= DPAD_START;
+        if (kbd_state & KBD_STATE_ESC)   buttons |= DPAD_B;  // ESC = cancel/back
+        
 #ifdef USB_HID_ENABLED
         // Poll USB and merge USB gamepad state
         usbhid_task();
@@ -1126,10 +1155,17 @@ settings_result_t settings_menu_show_with_restore(uint8_t *screen_buffer, uint8_
 }
 
 bool settings_check_hotkey(void) {
-    // Check if Start+Select are both pressed
+    // Check if Start+Select are both pressed (gamepad), or ESC on keyboard
     nespad_read();
     
     bool start_select = (nespad_state & DPAD_SELECT) && (nespad_state & DPAD_START);
+    
+    // Check PS/2 keyboard for ESC
+    ps2kbd_tick();
+    uint16_t kbd_state = ps2kbd_get_state();
+    if (kbd_state & KBD_STATE_ESC) {
+        start_select = true;
+    }
     
 #ifdef USB_HID_ENABLED
     if (!start_select && usbhid_gamepad_connected()) {

@@ -10,6 +10,7 @@
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
 #include "nespad/nespad.h"
+#include "ps2kbd/ps2kbd_wrapper.h"
 #include "settings.h"
 #include "psram_allocator.h"
 #include <string.h>
@@ -900,6 +901,20 @@ bool rom_selector_show(char *selected_rom_path, size_t buffer_size, uint8_t *scr
         // Read gamepad
         nespad_read();
         uint32_t buttons = nespad_state;
+        
+        // Poll PS/2 keyboard and get state
+        ps2kbd_tick();
+        uint16_t kbd_state = ps2kbd_get_state();
+        
+        // Merge keyboard state into buttons
+        if (kbd_state & KBD_STATE_UP)    buttons |= DPAD_UP;
+        if (kbd_state & KBD_STATE_DOWN)  buttons |= DPAD_DOWN;
+        if (kbd_state & KBD_STATE_LEFT)  buttons |= DPAD_LEFT;
+        if (kbd_state & KBD_STATE_RIGHT) buttons |= DPAD_RIGHT;
+        if (kbd_state & KBD_STATE_A)     buttons |= DPAD_A;      // A key = confirm
+        if (kbd_state & KBD_STATE_B)     buttons |= DPAD_B;      // S key = back
+        if (kbd_state & KBD_STATE_START) buttons |= DPAD_START;  // X/Space/Enter = confirm
+        if (kbd_state & KBD_STATE_ESC)   buttons |= (DPAD_SELECT | DPAD_START);  // ESC = open settings
         
 #ifdef USB_HID_ENABLED
         // Poll USB and merge USB gamepad state

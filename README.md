@@ -88,6 +88,13 @@ Two GPIO layouts are supported: **M1** and **M2**. The PSRAM pin is auto-detecte
 | BCLK   | 27      | 10      |
 | LRCLK  | 28      | 11      |
 
+### PS/2 Keyboard (directly connected)
+
+| Signal | M1 GPIO | M2 GPIO |
+|--------|---------|---------|
+| CLK    | 0       | 2       |
+| DATA   | 1       | 3       |
+
 ## Controller Support
 
 ### NES Gamepad (3-button mode)
@@ -120,6 +127,24 @@ The emulator automatically detects SNES controllers and provides full 6-button s
 ### USB Gamepad
 
 When built with USB HID support, standard USB gamepads are supported with automatic button mapping.
+
+### PS/2 Keyboard
+
+PS/2 keyboards are supported for direct gameplay without a gamepad.
+
+| Keyboard Key | Genesis Button | Notes |
+|--------------|----------------|-------|
+| Arrow keys   | D-pad          | Movement |
+| A            | A              | |
+| S            | B              | |
+| D            | C              | |
+| Q            | X              | 6-button mode |
+| W            | Y              | 6-button mode |
+| E            | Z              | 6-button mode |
+| Enter        | Start          | |
+| Space        | Select         | |
+| Alt          | Mode           | 6-button mode toggle |
+| ESC          | Settings       | Opens settings menu |
 
 ## Building
 

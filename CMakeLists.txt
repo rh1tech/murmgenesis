@@ -80,6 +80,7 @@ add_subdirectory(src/fatfs)
 # Add drivers
 add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/nespad)
+add_subdirectory(drivers/ps2kbd)
 
 # Create a library for other drivers
 add_library(drivers
@@ -258,6 +259,7 @@ target_link_libraries(murmgenesis
     fatfs
     drivers
     nespad
+    ps2kbd
 )
 
 # USB configuration: stdio vs HID Host (mutually exclusive)
