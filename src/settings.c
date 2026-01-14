@@ -54,6 +54,7 @@ typedef enum {
     MENU_CRT_EFFECT,
     MENU_CRT_DIM,
     MENU_FRAMESKIP,
+    MENU_GAMEPAD2,
     MENU_SEPARATOR,  // Visual separator
     MENU_SAVE_RESTART,
     MENU_RESTART,
@@ -86,12 +87,17 @@ settings_t g_settings = {
     .z80_enabled = true,
     .audio_enabled = true,
     .channel_mask = 0x7F,  // All 7 channels enabled (bits 0-6)
-    .frameskip = 3  // Default: high (30fps)
+    .frameskip = 3,  // Default: high (30fps)
+    .gamepad2_mode = GAMEPAD2_MODE_NES  // Default: NES gamepad 2
 };
 
 // Frameskip level names
 static const char* frameskip_names[] = {"NONE", "LOW", "MEDIUM", "HIGH", "EXTREME"};
 #define FRAMESKIP_MAX_LEVEL 4
+
+// Gamepad 2 mode names
+static const char* gamepad2_mode_names[] = {"NES", "KEYBOARD", "USB", "DISABLED"};
+#define GAMEPAD2_MODE_MAX 3
 
 // Local copy for editing
 static settings_t edit_settings;
@@ -277,6 +283,7 @@ static const char* get_menu_label(menu_item_t item) {
         case MENU_CRT_EFFECT:   return "CRT EFFECT";
         case MENU_CRT_DIM:      return "CRT DIM";
         case MENU_FRAMESKIP:    return "FRAMESKIP";
+        case MENU_GAMEPAD2:     return "GAMEPAD 2";
         case MENU_SEPARATOR:    return "";
         case MENU_SAVE_RESTART: return "SAVE AND RESTART";
         case MENU_RESTART:      return "RESTART WITHOUT SAVING";
@@ -323,6 +330,9 @@ static void get_menu_value(menu_item_t item, char *buf, size_t size) {
             break;
         case MENU_FRAMESKIP:
             snprintf(buf, size, "< %s >", frameskip_names[edit_settings.frameskip]);
+            break;
+        case MENU_GAMEPAD2:
+            snprintf(buf, size, "< %s >", gamepad2_mode_names[edit_settings.gamepad2_mode]);
             break;
         default:
             buf[0] = '\0';
@@ -387,6 +397,14 @@ static void change_setting(menu_item_t item, int direction) {
                 edit_settings.frameskip--;
             } else if (direction > 0 && edit_settings.frameskip < FRAMESKIP_MAX_LEVEL) {
                 edit_settings.frameskip++;
+            }
+            break;
+            
+        case MENU_GAMEPAD2:
+            if (direction < 0 && edit_settings.gamepad2_mode > 0) {
+                edit_settings.gamepad2_mode--;
+            } else if (direction > 0 && edit_settings.gamepad2_mode < GAMEPAD2_MODE_MAX) {
+                edit_settings.gamepad2_mode++;
             }
             break;
             
@@ -750,6 +768,7 @@ void settings_load(void) {
     g_settings.audio_enabled = true;
     g_settings.channel_mask = 0x7F;  // All channels on
     g_settings.frameskip = 3;  // Default: high
+    g_settings.gamepad2_mode = GAMEPAD2_MODE_NES;  // Default: NES
     
     FRESULT res = f_open(&file, "/genesis/settings.ini", FA_READ);
     if (res != FR_OK) {
@@ -827,6 +846,17 @@ void settings_load(void) {
                 g_settings.frameskip = (uint8_t)level;
             }
         }
+        else if (parse_ini_line(line, "gamepad2", value, sizeof(value))) {
+            if (strcasecmp(value, "nes") == 0 || strcmp(value, "0") == 0) {
+                g_settings.gamepad2_mode = GAMEPAD2_MODE_NES;
+            } else if (strcasecmp(value, "keyboard") == 0 || strcmp(value, "1") == 0) {
+                g_settings.gamepad2_mode = GAMEPAD2_MODE_KEYBOARD;
+            } else if (strcasecmp(value, "usb") == 0 || strcmp(value, "2") == 0) {
+                g_settings.gamepad2_mode = GAMEPAD2_MODE_USB;
+            } else if (strcasecmp(value, "disabled") == 0 || strcmp(value, "3") == 0) {
+                g_settings.gamepad2_mode = GAMEPAD2_MODE_DISABLED;
+            }
+        }
     }
     
     f_close(&file);
@@ -858,6 +888,7 @@ bool settings_save(void) {
         "crt_effect = %s\n"
         "crt_dim = %d\n"
         "frameskip = %d\n"
+        "gamepad2 = %s\n"
         "\n"
         "; Audio Channels\n"
         "channel_1 = %s\n"
@@ -875,6 +906,7 @@ bool settings_save(void) {
         g_settings.crt_effect ? "on" : "off",
         g_settings.crt_dim,
         g_settings.frameskip,
+        gamepad2_mode_names[g_settings.gamepad2_mode],
         CHANNEL_ENABLED(g_settings.channel_mask, 0) ? "on" : "off",
         CHANNEL_ENABLED(g_settings.channel_mask, 1) ? "on" : "off",
         CHANNEL_ENABLED(g_settings.channel_mask, 2) ? "on" : "off",

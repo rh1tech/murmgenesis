@@ -1429,37 +1429,40 @@ void gwenesis_io_get_buttons(void) {
     }
     
     // Map buttons to Genesis controller - Pad 2
+    // Only read NES pad 2 when gamepad2_mode is NES (default)
     button_state[1] = 0xFF;
     
-    // D-pad mapping (same for NES/SNES)
-    if (nespad_state2 & DPAD_UP)    button_state[1] &= ~(1 << 0);
-    if (nespad_state2 & DPAD_DOWN)  button_state[1] &= ~(1 << 1);
-    if (nespad_state2 & DPAD_LEFT)  button_state[1] &= ~(1 << 2);
-    if (nespad_state2 & DPAD_RIGHT) button_state[1] &= ~(1 << 3);
-    
-    if (is_snes_pad2) {
-        // SNES controller - 6-button mapping (same as pad 1)
-        if (nespad_state2 & DPAD_A)  button_state[1] &= ~(1 << 6); // SNES B → Genesis A (jump)
-        if (nespad_state2 & DPAD_Y)  button_state[1] &= ~(1 << 4); // SNES A → Genesis B (shoot)
-        if (nespad_state2 & DPAD_B)  button_state[1] &= ~(1 << 5); // SNES Y → Genesis C (special)
-        if (nespad_state2 & DPAD_X)  button_state[1] &= ~(1 << 5); // SNES X → Genesis C (special alt)
-        if (nespad_state2 & DPAD_LT) button_state[1] &= ~(1 << 6); // SNES L → Genesis A (jump alt)
-        if (nespad_state2 & DPAD_RT) button_state[1] &= ~(1 << 4); // SNES R → Genesis B (shoot alt)
-    } else {
-        // NES controller - button combos
-        bool a_pressed2 = (nespad_state2 & DPAD_A);
-        bool b_pressed2 = (nespad_state2 & DPAD_B);
+    if (g_settings.gamepad2_mode == GAMEPAD2_MODE_NES) {
+        // D-pad mapping (same for NES/SNES)
+        if (nespad_state2 & DPAD_UP)    button_state[1] &= ~(1 << 0);
+        if (nespad_state2 & DPAD_DOWN)  button_state[1] &= ~(1 << 1);
+        if (nespad_state2 & DPAD_LEFT)  button_state[1] &= ~(1 << 2);
+        if (nespad_state2 & DPAD_RIGHT) button_state[1] &= ~(1 << 3);
         
-        // A+B combo = Genesis C
-        if (a_pressed2 && b_pressed2) {
-            button_state[1] &= ~(1 << 5); // A+B = Genesis C
+        if (is_snes_pad2) {
+            // SNES controller - 6-button mapping (same as pad 1)
+            if (nespad_state2 & DPAD_A)  button_state[1] &= ~(1 << 6); // SNES B → Genesis A (jump)
+            if (nespad_state2 & DPAD_Y)  button_state[1] &= ~(1 << 4); // SNES A → Genesis B (shoot)
+            if (nespad_state2 & DPAD_B)  button_state[1] &= ~(1 << 5); // SNES Y → Genesis C (special)
+            if (nespad_state2 & DPAD_X)  button_state[1] &= ~(1 << 5); // SNES X → Genesis C (special alt)
+            if (nespad_state2 & DPAD_LT) button_state[1] &= ~(1 << 6); // SNES L → Genesis A (jump alt)
+            if (nespad_state2 & DPAD_RT) button_state[1] &= ~(1 << 4); // SNES R → Genesis B (shoot alt)
         } else {
-            if (b_pressed2) button_state[1] &= ~(1 << 4); // B = Genesis B
-            if (a_pressed2) button_state[1] &= ~(1 << 6); // A = Genesis A
+            // NES controller - button combos
+            bool a_pressed2 = (nespad_state2 & DPAD_A);
+            bool b_pressed2 = (nespad_state2 & DPAD_B);
+            
+            // A+B combo = Genesis C
+            if (a_pressed2 && b_pressed2) {
+                button_state[1] &= ~(1 << 5); // A+B = Genesis C
+            } else {
+                if (b_pressed2) button_state[1] &= ~(1 << 4); // B = Genesis B
+                if (a_pressed2) button_state[1] &= ~(1 << 6); // A = Genesis A
+            }
         }
+        
+        if (nespad_state2 & DPAD_START) button_state[1] &= ~(1 << 7);
     }
-    
-    if (nespad_state2 & DPAD_START) button_state[1] &= ~(1 << 7);
 #else
     // No gamepad - all buttons released
     button_state[0] = 0xFF;
@@ -1467,30 +1470,38 @@ void gwenesis_io_get_buttons(void) {
 #endif
 
 #ifdef USB_HID_ENABLED
-    // Also check USB gamepad (overrides/combines with NES/SNES pad)
+    // USB gamepad handling based on gamepad2_mode setting
+    // Default: USB mirrors NES (both control P1)
+    // USB mode: USB controls P2, NES controls P1
+    int usb_target_player = (g_settings.gamepad2_mode == GAMEPAD2_MODE_USB) ? 1 : 0;
+    
     if (usbhid_gamepad_connected()) {
         usbhid_gamepad_state_t gp;
         usbhid_get_gamepad_state(&gp);
         
         // D-pad from USB gamepad
-        if (gp.dpad & 0x01) button_state[0] &= ~(1 << 0); // Up
-        if (gp.dpad & 0x02) button_state[0] &= ~(1 << 1); // Down
-        if (gp.dpad & 0x04) button_state[0] &= ~(1 << 2); // Left
-        if (gp.dpad & 0x08) button_state[0] &= ~(1 << 3); // Right
+        if (gp.dpad & 0x01) button_state[usb_target_player] &= ~(1 << 0); // Up
+        if (gp.dpad & 0x02) button_state[usb_target_player] &= ~(1 << 1); // Down
+        if (gp.dpad & 0x04) button_state[usb_target_player] &= ~(1 << 2); // Left
+        if (gp.dpad & 0x08) button_state[usb_target_player] &= ~(1 << 3); // Right
         
         // Buttons from USB gamepad (mapped in process_gamepad_report)
         // bit 0=A, 1=B, 2=C, 3=X, 4=Y, 5=Z, 6=Start, 7=Select/Mode
-        if (gp.buttons & 0x01) button_state[0] &= ~(1 << 6); // A → Genesis A
-        if (gp.buttons & 0x02) button_state[0] &= ~(1 << 4); // B → Genesis B
-        if (gp.buttons & 0x04) button_state[0] &= ~(1 << 5); // C → Genesis C
-        if (gp.buttons & 0x40) button_state[0] &= ~(1 << 7); // Start → Genesis Start
+        if (gp.buttons & 0x01) button_state[usb_target_player] &= ~(1 << 6); // A → Genesis A
+        if (gp.buttons & 0x02) button_state[usb_target_player] &= ~(1 << 4); // B → Genesis B
+        if (gp.buttons & 0x04) button_state[usb_target_player] &= ~(1 << 5); // C → Genesis C
+        if (gp.buttons & 0x40) button_state[usb_target_player] &= ~(1 << 7); // Start → Genesis Start
         
         // SELECT+START combo is now handled in the emulation loop for settings menu
     }
 #endif
 
-    // PS/2 Keyboard input for Player 1
-    // Get current keyboard state (updated by ps2kbd_tick in gwenesis_io_get_buttons)
+    // Keyboard handling based on gamepad2_mode setting
+    // Default: Keyboard controls P1
+    // Keyboard mode: Keyboard controls P2
+    int kbd_target_player = (g_settings.gamepad2_mode == GAMEPAD2_MODE_KEYBOARD) ? 1 : 0;
+    
+    // PS/2 Keyboard input
     ps2kbd_tick();
     uint16_t kbd_state = ps2kbd_get_state();
     
@@ -1499,15 +1510,15 @@ void gwenesis_io_get_buttons(void) {
     kbd_state |= usbhid_get_kbd_state();
 #endif
     
-    // Apply keyboard state to button_state[0] (Player 1)
-    // Note: keyboard ORs with gamepad (either can trigger button)
-    if (kbd_state & KBD_STATE_UP)    button_state[0] &= ~(1 << 0);  // Up
-    if (kbd_state & KBD_STATE_DOWN)  button_state[0] &= ~(1 << 1);  // Down
-    if (kbd_state & KBD_STATE_LEFT)  button_state[0] &= ~(1 << 2);  // Left
-    if (kbd_state & KBD_STATE_RIGHT) button_state[0] &= ~(1 << 3);  // Right
-    if (kbd_state & KBD_STATE_A)     button_state[0] &= ~(1 << 6);  // A key -> Genesis A (bit 6)
-    if (kbd_state & KBD_STATE_B)     button_state[0] &= ~(1 << 4);  // S key -> Genesis B (bit 4)
-    if (kbd_state & KBD_STATE_C)     button_state[0] &= ~(1 << 5);  // D key -> Genesis C (bit 5)
-    if (kbd_state & KBD_STATE_START) button_state[0] &= ~(1 << 7);  // Start
+    // Apply keyboard state to the appropriate player
+    if (kbd_state & KBD_STATE_UP)    button_state[kbd_target_player] &= ~(1 << 0);  // Up
+    if (kbd_state & KBD_STATE_DOWN)  button_state[kbd_target_player] &= ~(1 << 1);  // Down
+    if (kbd_state & KBD_STATE_LEFT)  button_state[kbd_target_player] &= ~(1 << 2);  // Left
+    if (kbd_state & KBD_STATE_RIGHT) button_state[kbd_target_player] &= ~(1 << 3);  // Right
+    if (kbd_state & KBD_STATE_A)     button_state[kbd_target_player] &= ~(1 << 6);  // A key -> Genesis A (bit 6)
+    if (kbd_state & KBD_STATE_B)     button_state[kbd_target_player] &= ~(1 << 4);  // S key -> Genesis B (bit 4)
+    if (kbd_state & KBD_STATE_C)     button_state[kbd_target_player] &= ~(1 << 5);  // D key -> Genesis C (bit 5)
+    if (kbd_state & KBD_STATE_START) button_state[kbd_target_player] &= ~(1 << 7);  // Start
+    if (kbd_state & KBD_STATE_SELECT) button_state[kbd_target_player] &= ~(1 << 7); // Select also as Start for P2
     // Note: X, Y, Z, Mode are for 6-button controllers (not yet fully implemented in gwenesis_io)
 }

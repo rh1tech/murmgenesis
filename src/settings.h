@@ -20,7 +20,14 @@ typedef struct {
     bool audio_enabled;     // Master audio: true (default), false
     uint8_t channel_mask;   // Channel enable bitmask: bits 0-5 = FM 1-6, bit 6 = PSG
     uint8_t frameskip;      // Frameskip level: 0=none, 1=low, 2=medium, 3=high (default), 4=extreme
+    uint8_t gamepad2_mode;  // Gamepad 2 mode: 0=NES, 1=keyboard, 2=USB, 3=disabled
 } settings_t;
+
+// Gamepad 2 mode values
+#define GAMEPAD2_MODE_NES      0  // Second NES/SNES gamepad (default)
+#define GAMEPAD2_MODE_KEYBOARD 1  // Keyboard controls P2 instead of P1
+#define GAMEPAD2_MODE_USB      2  // USB gamepad controls P2, NES controls P1
+#define GAMEPAD2_MODE_DISABLED 3  // Gamepad 2 disabled
 
 // Helper macros for channel_mask
 #define CHANNEL_ENABLED(mask, ch) (((mask) >> (ch)) & 1)

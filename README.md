@@ -78,7 +78,10 @@ Two GPIO layouts are supported: **M1** and **M2**. The PSRAM pin is auto-detecte
 |--------|---------|---------|
 | CLK    | 14      | 20      |
 | LATCH  | 15      | 21      |
-| DATA   | 16      | 26      |
+| DATA 1 | 16      | 26      |
+| DATA 2 | 17      | 27      |
+
+> **Note:** Gamepad 2 uses the same CLK and LATCH as Gamepad 1, only the DATA pin differs.
 
 ### I2S Audio
 
@@ -149,8 +152,6 @@ PS/2 keyboards are supported for direct gameplay without a gamepad.
 ### USB Keyboard
 
 When built with USB HID support (`-DUSB_HID_ENABLED=1`), USB keyboards are also supported with the same key mappings as PS/2 keyboards (see table above).
-| Alt          | Mode           | 6-button mode toggle |
-| ESC          | Settings       | Opens settings menu |
 
 ## Building
 
@@ -252,8 +253,20 @@ Press **Select + Start** during gameplay to open the settings menu. Available op
 - **CRT Effect**: Scanline effect on/off
 - **CRT Dim**: Scanline brightness (10-90%)
 - **Frameskip**: None / Low / Medium / High / Extreme
+- **Gamepad 2**: NES / Keyboard / USB / Disabled
 
 Settings are saved to `genesis/settings.ini` and persist across reboots.
+
+### Gamepad 2 Modes
+
+The **Gamepad 2** setting controls how the second player input is handled:
+
+| Mode | Description |
+|------|-------------|
+| **NES** (default) | Second NES/SNES gamepad controls Player 2, keyboard controls Player 1 |
+| **Keyboard** | Keyboard controls Player 2 instead of Player 1 |
+| **USB** | USB gamepad controls Player 2, NES/SNES gamepad controls Player 1 |
+| **Disabled** | Player 2 input is disabled |
 
 ## Troubleshooting
 
