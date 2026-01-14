@@ -40,6 +40,9 @@ set(CRT_SCANLINES "1" CACHE STRING "CRT scanlines: 0=off, 1=on")
 # CRT dim brightness percentage (only used if CRT_SCANLINES=1)
 set(CRT_DIM_PERCENT "60" CACHE STRING "CRT dim line brightness: 0-100")
 
+# Logging (debug output via UART) - disable for release builds
+set(ENABLE_LOGGING "1" CACHE STRING "Enable debug logging: 0=off, 1=on")
+
 # CPU voltage selection based on speed
 if(CPU_SPEED GREATER_EQUAL 504)
     set(CPU_VOLTAGE "VREG_VOLTAGE_1_65")
@@ -202,7 +205,7 @@ target_compile_definitions(murmgenesis PRIVATE
     ROM_SWAP=0
     BUS_DISABLE_LOGGING=1
     VDP_GFX_DISABLE_LOGGING=1
-    ENABLE_LOGGING=1
+    ENABLE_LOGGING=${ENABLE_LOGGING}
     # M68K configuration (Genesis-Plus-GX)
     LSB_FIRST=1
     # I2S Audio configuration - use PIO0 to avoid conflict with HDMI on PIO1

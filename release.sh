@@ -131,8 +131,8 @@ for config in "${CONFIGS[@]}"; do
     mkdir build
     cd build
     
-    # Configure with CMake (USB HID enabled for keyboard/mouse support)
-    cmake .. -DBOARD_VARIANT="$BOARD" -DCPU_SPEED="$CPU" -DPSRAM_SPEED="$PSRAM" -DUSB_HID_ENABLED=1 > /dev/null 2>&1
+    # Configure with CMake (USB HID enabled, logging disabled for release)
+    cmake .. -DBOARD_VARIANT="$BOARD" -DCPU_SPEED="$CPU" -DPSRAM_SPEED="$PSRAM" -DUSB_HID_ENABLED=1 -DENABLE_LOGGING=0 > /dev/null 2>&1
     
     # Build
     if make -j8 > /dev/null 2>&1; then
