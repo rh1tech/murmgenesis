@@ -28,11 +28,11 @@
 // Font constants (same as ROM selector)
 #define FONT_WIDTH 6    // 5px glyph + 1px spacing
 #define FONT_HEIGHT 7
-#define LINE_HEIGHT 12  // Slightly more spacing for settings
+#define LINE_HEIGHT 10  // Compact spacing for settings
 
 // UI layout
 #define MENU_TITLE_Y 20
-#define MENU_START_Y 50
+#define MENU_START_Y 40
 #define MENU_X 40
 #define VALUE_X 200  // X position for values
 
@@ -1014,6 +1014,20 @@ settings_result_t settings_menu_show_with_restore(uint8_t *screen_buffer, uint8_
     
     // Small delay to let display settle
     sleep_ms(100);
+    
+    // Wait for all keys to be released before starting input loop
+    // This prevents ESC from immediately closing the menu when it was used to open it
+    while (true) {
+        nespad_read();
+        ps2kbd_tick();
+        uint16_t kbd_state = ps2kbd_get_state();
+#ifdef USB_HID_ENABLED
+        kbd_state |= usbhid_get_kbd_state();
+        usbhid_task();
+#endif
+        if (nespad_state == 0 && kbd_state == 0) break;
+        sleep_ms(10);
+    }
     
     while (true) {
         // Read gamepad
